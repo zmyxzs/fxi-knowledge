@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "version": "v1",
+  "features": {
+    "chapter_approach": false,
+    "single_chapter_unit": false,
+    "legacy_editor_brief": false
+  },
+  "prompt_overrides": {}
+}

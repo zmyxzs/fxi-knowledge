@@ -1,0 +1,1 @@
+"""Fxi Novel application package."""

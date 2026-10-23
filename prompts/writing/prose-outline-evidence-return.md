@@ -1,0 +1,3 @@
+outline_evidence若存在，是前一步仅核对章纲与候选证据时发现的缺口，尚未作最终裁定。结合本轮完整材料逐项核对：候选证据已充分或本章不要求落实时撤回；确有缺口时保留；范围或归属不准则修正；关键依据仍不足则保留未决。不要因其他情节已完成而忽略该条件，也不要自动接受前一步的判断。
+
+仅当outline_evidence.conditions非空，输出另加outline_evidence_assessments。每个condition_id恰给一项：{"condition_id":"输入ID","decision":"confirmed|revised|dismissed|unresolved","reason":"支持处置的依据","finding_ids":["本次findings中的对应ID"]}。confirmed、revised或unresolved需将仍成立的问题写入findings并给对应ID，同时在对应scene的章纲判断中反映缺口或未决；dismissed说明反证或不要求本章落实的依据，finding_ids为空。未决问题repair_target为unresolved。缺披露但既定情节可保持时交prose；原卡本身有冲突交outline，不用补说明掩盖冲突。对缺失内容，finding定位到可承载该内容的相关句群，不扩大到全文、不预写补丁。原例、作者设定和章纲不充当正文已经交代的证据。
