@@ -18,9 +18,19 @@
 | `src/fxi_novel/prompt_loading.py` | 提示词装载（学习链路要用） |
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
-| `tests/` | 只依赖上述包的 188 个测试文件 |
+| `tests/` | 只依赖上述包的 183 个测试文件（1795 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
+
+## 当前基线
+
+在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
+
+```
+22 failed, 1766 passed, 7 skipped in 719s
+```
+
+这 22 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。
 
 ## 为什么 import 路径还是 `fxi_novel`
 
@@ -33,7 +43,7 @@
 ## 相对原项目的三处适配
 
 1. `src/fxi_novel/writing/__init__.py` 被改写成最小版本——原文件会导入 `chapter_check`，那个模块属于写作系统，没有抽过来。
-2. 删除了 34 个测试文件：它们通过测试辅助模块间接依赖 `fxi_novel.api` / `fxi_novel.assistant` / `scripts`，无法在只有知识库的情况下收集。
+2. 删除了 39 个测试文件：34 个通过辅助模块间接依赖 `fxi_novel.api` / `fxi_novel.assistant` / `scripts`；另外 5 个是 HTTP 或验收脚本（`test_source_edit_revision`、`test_source_record_history`、`test_source_save_receipts`、`test_d1_query_baseline_run`、`test_style_validation_batches`），按 `scripts/`、`data/validation/` 的绝对路径读文件，属于工具链而不是知识库单元测试。
 3. `prompts/` 与 `config/writing_chains/` 整体复制，因为 `learning` 的服务会按路径读取提示词，`chain_versions.selected_prompt` 也会读链配置。
 
 ## 怎么跑
