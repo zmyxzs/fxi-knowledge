@@ -11,8 +11,10 @@ from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Mapping
 
+from fxi_novel.project_paths import project_root
 
-SOURCE_ROOT = Path(__file__).resolve().parents[3]
+
+SOURCE_ROOT = project_root()
 DEFAULT_VERSION = "v1"
 VERSION_LABELS = {"v1": "版本1", "v2": "版本2"}
 _ACTIVE: ContextVar[dict[str, Any] | None] = ContextVar("writing_chain", default=None)
@@ -79,7 +81,13 @@ class WritingChainVersions:
     def capture(self, version: str) -> dict[str, str]:
         if version not in VERSION_LABELS:
             raise ValueError("unsupported writing chain version")
-        definition = json.loads((self.source_root / "config/writing_chains" / f"{version}.json").read_text(encoding="utf-8"))
+        definition_path = self.source_root / "config/writing_chains" / f"{version}.json"
+        if not definition_path.is_file():
+            raise FileNotFoundError(
+                f"writing chain definition not found: {definition_path}; "
+                "set FXI_NOVEL_ROOT to a checkout root or reinstall the package with its data files"
+            )
+        definition = json.loads(definition_path.read_text(encoding="utf-8"))
         if definition.get("version") != version or definition.get("schema_version") != 1:
             raise ValueError("writing chain definition has an invalid identity")
         if (not isinstance(definition.get("features"), dict)

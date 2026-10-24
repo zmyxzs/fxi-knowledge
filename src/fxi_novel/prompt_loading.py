@@ -5,9 +5,11 @@ and must not be passed through this loader during replay.
 """
 from pathlib import Path
 
+from .project_paths import project_root
+
 
 DECISION_METHOD_MARKER = "{{decision_method}}"
-DECISION_METHOD_PATH = Path(__file__).resolve().parents[2] / "prompts" / "shared" / "decision-method.md"
+DECISION_METHOD_PATH = project_root() / "prompts" / "shared" / "decision-method.md"
 
 
 def load_prompt(path: str | Path, *, decision_method_path: str | Path | None = None) -> str:

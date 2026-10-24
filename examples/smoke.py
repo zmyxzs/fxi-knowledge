@@ -18,6 +18,8 @@ from fxi_novel.storage.database import Database
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     database = Database(":memory:")
     database.initialize()
     knowledge = KnowledgeService(

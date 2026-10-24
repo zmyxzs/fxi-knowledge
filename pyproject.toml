@@ -6,6 +6,7 @@ build-backend = "hatchling.build"
 name = "fxi-knowledge"
 version = "0.1.0"
 description = "Standalone knowledge base extracted from the Fxi Novel writing system"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "httpx>=0.27,<1",
@@ -16,10 +17,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10", "pytest-asyncio>=0.24"]
+dev = ["pytest>=8,<10", "pytest-asyncio>=0.24", "ruff>=0.15,<0.16"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/fxi_novel"]
+
+# Prompts and writing-chain definitions are read by path at runtime, so the
+# wheel ships them as package data under fxi_novel/_data (see project_paths.py).
+[tool.hatch.build.targets.wheel.force-include]
+"prompts" = "fxi_novel/_data/prompts"
+"config/writing_chains" = "fxi_novel/_data/config/writing_chains"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
