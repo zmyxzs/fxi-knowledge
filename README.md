@@ -88,6 +88,13 @@ $env:PYTHONPATH='D:\Projects\fxi-knowledge\src'
 D:\Projects\Fxi-novel\.venv\Scripts\python.exe -m pytest -q
 ```
 
+## 持续集成
+
+`.github/workflows/tests.yml` 在 push / PR 时执行：
+
+- `ruff check . --select E9,F63,F7,F82`：只挡语法错误和未定义名；存量 `F401` / `F403` / `F405` 暂不作为门禁
+- `pytest -q`：全量 1803 个用例
+
 ## 程序 API
 
 知识库对外只有一条主链路：`Database` → `KnowledgeRepository` → `KnowledgeService`。
