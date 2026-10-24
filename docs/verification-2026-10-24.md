@@ -26,7 +26,8 @@
 ### 装配
 
 独立仓库没有写作系统的 narrative manifest，因此写作空间解析必须自备
-`set_writing_narrative_order_reader`。验证时用了一个最小 stand-in：
+`set_writing_narrative_order_reader`。验证时用了一个最小 stand-in（现已整理为
+`examples/writing_order_reader.py` 的 `SourceOrderManifest`）：
 
 - 按导入顺序给每章 `ordinal=1..N`、`chapter_order=2*ordinal`；
 - `source_pin` 使用真实的 `snapshot_id` / `content_hash`，`artifact_*` 和 `event_id` 由 stand-in 生成；
@@ -117,18 +118,33 @@ parser = KnowledgeGraphParseService(
 
 | 级别 | 问题 | 说明 |
 |---|---|---|
-| P1 | 写作空间解析依赖外部 narrative-order reader | 独立 checkout 没有 writer-owned manifest，直接解析会抛 `RuntimeError: writing narrative-order reader is not configured`。需要自备 reader（本次用 stand-in），或让项目提供默认实现。 |
+| P1 | 写作空间解析依赖外部 narrative-order reader | 独立 checkout 没有 writer-owned manifest，直接解析会抛 `RuntimeError: writing narrative-order reader is not configured`。本次的 stand-in 已整理为 `examples/writing_order_reader.py`，接上即可。 |
 | P1 | 事件整理硬性要求 DeepSeek | `event_reconciliation_review_execution` 校验 `provider_model` 含 "deepseek"；用 Gemini 时 resolution 必然失败（错误信息为 "requires DeepSeek"）。本次改为 Gemini 抽取 + DeepSeek 事件复核的混合装配。 |
-| P2 | 抽取提示词对模型敏感 | 同一批章节用 DeepSeek 做初次抽取时 3/3 来源 `review_incomplete`（结构或证据校验失败）；Gemini 正常。说明抽取契约与模型强绑定，跨模型鲁棒性不足。 |
+| P2 | DeepSeek 抽取默认配置会耗尽输出预算 | 同一批章节用 DeepSeek 做初次抽取时 3/3 来源 `review_incomplete`。查 `knowledge_parse_unit_attempt` 发现 `finish_reason=length`、`completion_tokens=16000` 全部是 reasoning、正文为空。把 `reasoning_effort` 设为 `"none"` 后单章抽取 17 次调用、批次 `completed`（92 条知识、33 个身份组、4 对事件复核）。不是 schema 不兼容。 |
 | P2 | 跨章节重复事件只部分合并 | 「杨凌进入吞天道宫副本」3 条、「风神金刚腿晋升出神入化」2 条、「杨凌升级80级」3 条仍并存；事件整理只复核了 1 对，其余被规则以粒度/类型冲突排除。 |
 | P2 | `search_planned` 的 `knowledge_cards` 为空 | 命中的知识条目以文本片段出现，但 `hit.knowledge_cards` 始终为 0；需要确认卡片附着是否只走另一条查询路径。 |
 | P3 | 项目级发布指针缺失 | `knowledge_project` 没有 `published_graph_version_id` 列（已知 xfail 之一），item 级发布不受影响，但项目级指针不可用。 |
 | P3 | 条目 `status` 仍为 `draft` | 155 条都有 `published_graph_version_id` 且进入投影/FTS，但 `knowledge_item.status` 和 `knowledge_version.status` 都是 `draft`；发布语义靠指针而不是 status，容易误读。 |
 
-## 5. 复跑方式
+## 5. DeepSeek 抽取失败的真实原因
+
+`knowledge_parse_unit_attempt` 里记录的是：
+
+- `finish_reason: "length"`，`completion_tokens: 16000`，其中 `reasoning_tokens: 16000`
+- `response_text` 为空，错误为 `InvalidChatResponse: chat provider returned empty text`
+
+也就是推理把输出预算吃光，正文还没开始。把路由的 `reasoning_effort` 设为 `"none"`（网关对 DeepSeek 会发 `thinking: {"type": "disabled"}`）后重跑：
+
+- 1 章、17 次模型调用、批次 `completed`
+- 92 条知识（attribute 17 / event 14 / ability 13 / concept 10 / organization 9 / prop 8 / character 7 / temporal_state 6 / relationship 6 / rule 2）
+- 33 个身份组，事件整理复核 4 对
+
+所以这是输出预算配置问题，不是抽取契约与模型不兼容；DeepSeek 路由应关闭推理或显著提高 `max_output_tokens`。
+
+## 6. 复跑步骤
 
 1. 准备网关配置（不要把 key 提交）：一个 Gemini 兼容路由 + 一个 DeepSeek 路由（事件整理必须）。
 2. 用 `Database("data/verify.sqlite3")` + `KnowledgeService` 建作品并导入章节。
-3. 实现最小 `get_order_in_connection` 返回 verified manifest。
+3. 接上 `examples/writing_order_reader.py` 的 `SourceOrderManifest`（或实现等价的 `get_order_in_connection`，返回 verified manifest）。
 4. `enqueue_parse_batch(space="writing", branch_id="main", ...)` 后 `await run_parse_batch(batch_id)`。
 5. 查询：`query_story_knowledge` / `search_planned` / `KnowledgeQueryPlanner` + `KnowledgeQueryAssessmentService`。

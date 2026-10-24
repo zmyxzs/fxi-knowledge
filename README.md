@@ -19,9 +19,9 @@
 | `src/fxi_novel/project_paths.py` | 定位 `prompts/` 与 `config/`：源码树、editable、wheel（`fxi_novel/_data`）三种布局 |
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
-| `examples/smoke.py` | 内存库冒烟检查：建库 → 建作品 → 导来源 → 读回 |
+| `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
 | `docs/` | 验证记录（导入、解析、查询的端到端结果与问题清单） |
-| `tests/` | 只依赖上述包的 184 个测试文件（1800 个用例） |
+| `tests/` | 只依赖上述包的 185 个测试文件（1803 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
 
@@ -30,7 +30,7 @@
 在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
 
 ```
-22 xfailed, 1771 passed, 7 skipped in 704s
+22 xfailed, 1774 passed, 7 skipped in 692s
 ```
 
 这 22 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
@@ -142,6 +142,20 @@ database.close()
 - 写入只有一个 owner：`knowledge` / `storage` 里的仓储；FTS 与向量都是可重建投影，`rebuild_search_index()` 可以从权威文本重建 FTS。
 - wheel 安装时提示词目录用 `project_root() / "prompts"`（`from fxi_novel.project_paths import project_root`）；源码/editable 安装会自动解析到仓库根。
 
+### 写作空间解析
+
+`writing` 空间的 parse 需要一个 narrative-order reader（完整产品里由写作系统提供）。独立使用时显式接上示例实现：
+
+```python
+from examples.writing_order_reader import SourceOrderManifest
+
+knowledge.set_writing_narrative_order_reader(
+    SourceOrderManifest(work_id=work["id"], branch_id="main")
+)
+```
+
+它按来源导入顺序编号并生成 verified manifest；`examples/` 不在安装包里，实际工程里把类拷进去、或换成自己的 reader 即可。
+
 ## 接模型（可选）
 
 `LearningService` 需要一个 `ChatModel`。仓库自带 `ModelGateway`，按 OpenAI 兼容协议请求
@@ -181,6 +195,7 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 - 可选路由：`[[chat_fallbacks]]`（数组，按顺序降级）、`[knowledge_query]`、`[creative]`。
 - `embedding.enabled = false` 时向量调用会抛 `ModelUnavailable`，词法检索不受影响。
 - 提示词目录用 `project_root() / "prompts" / "learning"`；`load_prompt()` 会展开 `{{decision_method}}`，并按链版本快照取覆盖文本。
+- DeepSeek 路由要把 `reasoning_effort` 设为 `"none"`（网关会发 `thinking: {"type": "disabled"}`）或显著提高 `max_output_tokens`：推理会先吃掉输出预算，预算耗尽时 `finish_reason=length`、正文为空，抽取会以 `review_incomplete` 失败。
 
 ## 环境变量
 
@@ -197,9 +212,9 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
    - 解析与发布：候选清理时机、替换依赖、身份恢复、覆盖度增量、解析锚点身份；
    - 查询与学习：源/文件夹选择器 OR 语义、缓存编译、材料共享、场景窗口预算、观察范围、规划复用、事件消解。
 2. **7 个 skip**：需要 `data/` 下的审计库或验证快照，这些数据没有抽进来；skip 消息里写了缺什么。
-3. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`docs/verification-2026-10-24.md` 有最小实现思路）。
+3. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`examples/writing_order_reader.py` 提供了一个按导入顺序编号的最小实现，可作起点）。
 4. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
-5. **抽取提示词对模型敏感**：同一批章节，Gemini 抽取通过、DeepSeek 抽取 3/3 来源结构校验失败（见验证记录 P2）。
+5. **DeepSeek 抽取要关闭推理或提高输出预算**：默认 16000 输出 token 会被 reasoning 全部占用（`finish_reason=length`、正文为空），表现为 `review_incomplete`；把 `reasoning_effort` 设为 `"none"` 后单章抽取可完成（见验证记录第 5 节）。
 6. **没有 HTTP / CLI 入口**：这是知识库而不是写作系统；需要对外服务时在上层自行封装（原项目的 `api/` 不在本仓库）。
 7. **没有 LICENSE**：默认保留所有权利，公开或分发前需要补一份。
 
