@@ -13,6 +13,7 @@ from fxi_novel.knowledge.parse_replacement import (
     preview_d1_parse_replacement,
     replace_d1_parse_products,
 )
+from fxi_novel.knowledge.parse_replacement_preservation import _candidate_reference_rows
 from fxi_novel.knowledge.repository import KnowledgeRepository
 from fxi_novel.storage.database import Database
 
@@ -73,7 +74,7 @@ class D1ParseReplacementTests(unittest.TestCase):
             self._insert_candidate(
                 connection, "legacy-human-fact", "fact", status="rejected", version_status="rejected",
                 entity_ref="legacy-entity-1", conflict_candidate_id="legacy-machine-fact",
-                review_trigger="user_report",
+                review_trigger="user_report", reference_index=True,
             )
             self._insert_candidate(
                 connection, "legacy-machine-fact", "fact", status="draft", version_status="draft",
@@ -133,6 +134,7 @@ class D1ParseReplacementTests(unittest.TestCase):
         entity_ref: str | None = None,
         conflict_candidate_id: str | None = None,
         review_trigger: str = "batch",
+        reference_index: bool = False,
     ) -> None:
         content = self._content(
             role,
@@ -160,6 +162,27 @@ class D1ParseReplacementTests(unittest.TestCase):
             (version_id, self.evidence_id),
         )
         self.repository._index_knowledge_graph_candidate(connection, item_id, version_id, content)
+        if reference_index:
+            # A human fact was published before it was rejected; the relation
+            # index survives the status change and the replacement preview
+            # requires it to match the latest content exactly.
+            for row in _candidate_reference_rows(item_id, version_id, content):
+                connection.execute(
+                    """INSERT OR IGNORE INTO knowledge_graph_relation_reference(
+                           candidate_item_id, candidate_version_id, space, work_id,
+                           reference_kind, reference_id, relation_role
+                       ) VALUES (?, ?, 'learning', NULL, ?, ?, ?)""",
+                    (row[0], row[1], row[2], row[3], row[4]),
+                )
+
+    def _purge_items(self, connection, item_ids):
+        return self.repository._purge_knowledge_items_in_connection(
+            connection,
+            item_ids,
+            owner_kind="parse_folder_clear",
+            space="learning",
+            work_id=None,
+        )
 
     def _preview(self):
         with self.database.connection() as connection:
@@ -197,7 +220,7 @@ class D1ParseReplacementTests(unittest.TestCase):
             result = replace_d1_parse_products(
                 connection,
                 active_parser_version=ACTIVE_PARSER,
-                purge_items=self.repository._purge_knowledge_items_in_connection,
+                purge_items=self._purge_items,
                 dry_run=True,
                 learning_work_id=None,
             )
@@ -236,7 +259,7 @@ class D1ParseReplacementTests(unittest.TestCase):
             result = replace_d1_parse_products(
                 connection,
                 active_parser_version=ACTIVE_PARSER,
-                purge_items=self.repository._purge_knowledge_items_in_connection,
+                purge_items=self._purge_items,
                 dry_run=False,
                 expected_fingerprint=preview.fingerprint,
                 transfer_protected_items=self._transfer,
@@ -321,7 +344,7 @@ class D1ParseReplacementTests(unittest.TestCase):
                 replace_d1_parse_products(
                     connection,
                     active_parser_version=ACTIVE_PARSER,
-                    purge_items=self.repository._purge_knowledge_items_in_connection,
+                    purge_items=self._purge_items,
                     dry_run=False,
                     expected_fingerprint=current.fingerprint,
                     transfer_protected_items=self._transfer,

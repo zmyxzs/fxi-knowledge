@@ -14,6 +14,7 @@ from fxi_novel.knowledge.graph_parser_support import (
     IDENTITY_RESOLUTION_VERSION,
     _identity_source_content_hash,
 )
+from fxi_novel.knowledge.models import KNOWLEDGE_GRAPH_SEMANTIC_REVIEW_VERSION
 
 
 def _recovery_case():
@@ -36,6 +37,18 @@ def _recovery_case():
         content = {
             "candidate_role": "entity", "entity_name": f"人物{index}",
             "entity_kind": "character", "value": "原文身份描述",
+            "semantic_review": {
+                "version": 1,
+                "reviewer_version": KNOWLEDGE_GRAPH_SEMANTIC_REVIEW_VERSION,
+                "assessment": "supported",
+                "rationale": "身份描述由原文直接支持。",
+                "evidence_span_ids": [],
+                "issue_codes": [],
+                "conflict_candidate_ids": [],
+                "corrected": False,
+                "review_trigger": "batch",
+                "reported_issue": None,
+            },
             "identity_resolution_version": IDENTITY_RESOLUTION_VERSION,
             "identity_prompt_hash": prompt_hash,
             "identity_group_id": f"group-{index}",
