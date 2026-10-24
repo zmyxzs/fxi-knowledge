@@ -1,16 +1,17 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 12 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 11 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
 
-Eight cases registered here first were later repaired and removed: the purge
+Nine cases registered here first were later repaired and removed: the purge
 batching fixture, the coverage-delta segment fixture, the row-repair runner's
 nullable schema, the event-resolution monkeypatch target, the material-sharing
-message assertion, the embedding receipt counter assertion, and the two v81
+message assertion, the embedding receipt counter assertion, the two v81
 backfill-repair cases (which set user_version backwards on an already-migrated
-database and re-ran every later migration).
+database and re-ran every later migration), and the parse-generation cleanup
+fixture (which still wrote the pre-``category`` candidate content shape).
 
 Two more were deleted because they only exercised upgrades from v81/v82
 databases: this checkout does not support old databases, and the current
@@ -36,9 +37,6 @@ _KNOWN_FAILURES: dict[str, str] = {
     ),
     "tests/test_graph_parser_identity_recovery.py::test_compact_wire_merges_need_not_equal_the_canonical_audit_partition": (
         "compact wire merges differ from the canonical audit partition"
-    ),
-    "tests/test_knowledge_graph_parse_cleanup.py::ParseGenerationCleanupTests::test_prior_parse_candidates_remain_until_replacement_is_published": (
-        "prior parse candidates disappear before the replacement is published"
     ),
     "tests/test_parse_replacement.py::D1ParseReplacementTests::test_replacement_copies_exact_dependency_and_preserves_human_history": (
         "parse replacement is blocked by a protected fact relation index mismatch"

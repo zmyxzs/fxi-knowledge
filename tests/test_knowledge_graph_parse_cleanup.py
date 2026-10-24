@@ -76,19 +76,26 @@ class ParseGenerationCleanupTests(unittest.TestCase):
     def _candidate(self, item_id: str, role: str) -> dict[str, object]:
         content: dict[str, object] = {
             "candidate_role": role,
+            "entity_ref": item_id,
+            "entity_name": "林澈",
+            "claim_basis": "narration",
             "evidence_quote_start": 0,
             "evidence_quote_end": 2,
         }
         if role == "entity":
             content.update({
-                "entity_ref": item_id,
-                "entity_name": "林澈",
-                "entity_category": "character",
-                "description": "人物卡原始描述",
+                "entity_kind": "character",
+                "entity_granularity": "instance",
+                "category": "character",
+                "subject": "林澈",
+                "predicate": "entity.profile",
+                "value": "人物卡原始描述",
             })
         else:
             content.update({
                 "entity_ref": "old-entity",
+                "category": "relationship",
+                "subject": "林澈",
                 "predicate": "holds_item",
                 "value": "持有钥匙",
             })
@@ -159,10 +166,10 @@ class ParseGenerationCleanupTests(unittest.TestCase):
                     "identity_source_content_hash": hashlib.sha256(
                         source_json.encode("utf-8")
                     ).hexdigest(),
-                    "identity_resolution_version": "test-v1",
+                    "identity_resolution_version": 1,
                     "identity_aliases": [],
                     "identity_name_roles": [],
-                    "identity_resolution": "resolved",
+                    "identity_resolution": "merged",
                     "identity_resolution_reason": "same person",
                 })
                 updates[item_id] = content
@@ -295,11 +302,11 @@ class ParseGenerationCleanupTests(unittest.TestCase):
         saved_content = json.loads(latest["content_json"])
         self.assertEqual(int(latest["version"]), 3)
         self.assertEqual(saved_content["semantic_review"], reviewed_content["semantic_review"])
-        self.assertEqual(saved_content["description"], reviewed_content["description"])
+        self.assertEqual(saved_content["value"], reviewed_content["value"])
         self.assertEqual(saved_content["identity_group_id"], "identity-reviewed-character")
 
         edited_content = dict(saved_content)
-        edited_content["description"] = "identity updates cannot rewrite the reviewed description"
+        edited_content["value"] = "identity updates cannot rewrite the reviewed value"
         with self.assertRaisesRegex(ValueError, "only update identity metadata"):
             self.repository.apply_graph_candidate_content_updates(
                 space="learning",
