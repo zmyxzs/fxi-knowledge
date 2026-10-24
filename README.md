@@ -30,15 +30,15 @@
 在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
 
 ```
-12 xfailed, 1782 passed, 7 skipped in 695s
+11 xfailed, 1783 passed, 7 skipped in 695s
 ```
 
-这 12 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
+这 11 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
 
 - 修好一项会变成 `XPASS`，提醒你从登记表里删掉对应条目；
 - 新增回归仍然是普通 `FAILED`，不会被这层标记吞掉。
 
-最初登记时是 22 项（`22 failed, 1766 passed, 7 skipped in 719s`）。其中 8 项属于夹具或断言漂移，已修复；另外 2 项只测 v81/v82 旧库升级，已删除（本项目不支持旧库升级）。逐条分析见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。
+最初登记时是 22 项（`22 failed, 1766 passed, 7 skipped in 719s`）。其中 9 项属于夹具或断言漂移，已修复；另外 2 项只测 v81/v82 旧库升级，已删除（本项目不支持旧库升级）。逐条分析见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。
 
 ## 为什么 import 路径还是 `fxi_novel`
 
@@ -217,7 +217,7 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 
 ## 已知限制
 
-1. **12 个既有失败**：都继承自原项目，已在 `tests/conftest.py` 登记为 `xfail(strict=True)`；分类、根因和修复风险见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。大致分三类：
+1. **11 个既有失败**：都继承自原项目，已在 `tests/conftest.py` 登记为 `xfail(strict=True)`；分类、根因和修复风险见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。大致分三类：
    - 解析与发布：候选清理时机、替换依赖、身份恢复；
    - 查询与学习：源/文件夹选择器 OR 语义、缓存编译、材料共享、场景窗口预算、观察范围、规划复用；
    - 其余为夹具/断言漂移，可修。
