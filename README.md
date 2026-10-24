@@ -21,7 +21,7 @@
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
 | `docs/` | 验证记录、发布语义、xfail triage |
-| `tests/` | 只依赖上述包的 185 个测试文件（1803 个用例） |
+| `tests/` | 只依赖上述包的 185 个测试文件（1801 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
 
@@ -30,15 +30,15 @@
 在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
 
 ```
-14 xfailed, 1782 passed, 7 skipped in 588s
+12 xfailed, 1782 passed, 7 skipped in 695s
 ```
 
-这 14 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
+这 12 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
 
 - 修好一项会变成 `XPASS`，提醒你从登记表里删掉对应条目；
 - 新增回归仍然是普通 `FAILED`，不会被这层标记吞掉。
 
-最初登记时是 22 项（`22 failed, 1766 passed, 7 skipped in 719s`）。其中 8 项属于夹具或断言漂移，已修复并从登记表移除：批量 purge 夹具、覆盖度增量 segment、row repair 的可空 schema、事件消解的 monkeypatch 目标、材料共享的报错文案、embedding receipt 的计数字段、v81 backfill 测试的版本号回退（2 个参数）。逐条分析见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。
+最初登记时是 22 项（`22 failed, 1766 passed, 7 skipped in 719s`）。其中 8 项属于夹具或断言漂移，已修复；另外 2 项只测 v81/v82 旧库升级，已删除（本项目不支持旧库升级）。逐条分析见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。
 
 ## 为什么 import 路径还是 `fxi_novel`
 
@@ -217,15 +217,16 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 
 ## 已知限制
 
-1. **14 个既有失败**：都继承自原项目，已在 `tests/conftest.py` 登记为 `xfail(strict=True)`；分类、根因和修复风险见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。大致分三类：
-   - 旧库迁移：`edit_revision` 列缺失、v82→v83 版本指针；
-   - 解析与发布：候选清理时机、替换依赖、身份恢复、覆盖度增量、解析锚点身份；
-   - 查询与学习：源/文件夹选择器 OR 语义、缓存编译、材料共享、场景窗口预算、观察范围、规划复用、事件消解。
-2. **7 个 skip**：需要 `data/` 下的审计库或验证快照，这些数据没有抽进来；skip 消息里写了缺什么。
-3. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`examples/writing_order_reader.py` 提供了一个按导入顺序编号的最小实现，可作起点）。
-4. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
-5. **DeepSeek 抽取要关闭推理或提高输出预算**：默认 16000 输出 token 会被 reasoning 全部占用（`finish_reason=length`、正文为空），表现为 `review_incomplete`；把 `reasoning_effort` 设为 `"none"` 后单章抽取可完成（见验证记录第 5 节）。
-6. **没有 HTTP / CLI 入口**：这是知识库而不是写作系统；需要对外服务时在上层自行封装（原项目的 `api/` 不在本仓库）。
+1. **12 个既有失败**：都继承自原项目，已在 `tests/conftest.py` 登记为 `xfail(strict=True)`；分类、根因和修复风险见 [`docs/xfail-triage.md`](docs/xfail-triage.md)。大致分三类：
+   - 解析与发布：候选清理时机、替换依赖、身份恢复；
+   - 查询与学习：源/文件夹选择器 OR 语义、缓存编译、材料共享、场景窗口预算、观察范围、规划复用；
+   - 其余为夹具/断言漂移，可修。
+2. **不支持旧库升级**：只支持从空库初始化；v81/v82 等旧库升级用例已删除（当前 `add_text_source` 依赖 v97 才加的 `source.edit_revision`）。
+3. **7 个 skip**：需要 `data/` 下的审计库或验证快照，这些数据没有抽进来；skip 消息里写了缺什么。
+4. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`examples/writing_order_reader.py` 提供了一个按导入顺序编号的最小实现，可作起点）。
+5. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
+6. **DeepSeek 抽取要关闭推理或提高输出预算**：默认 16000 输出 token 会被 reasoning 全部占用（`finish_reason=length`、正文为空），表现为 `review_incomplete`；把 `reasoning_effort` 设为 `"none"` 后单章抽取可完成（见验证记录第 5 节）。
+7. **没有 HTTP / CLI 入口**：这是知识库而不是写作系统；需要对外服务时在上层自行封装（原项目的 `api/` 不在本仓库）。
 
 ## 验证记录
 

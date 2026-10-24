@@ -1,4 +1,4 @@
-# 既有失败的 triage（22 → 14）
+# 既有失败的 triage（22 → 12）
 
 - 日期：2026-10-24
 - 方法：`pytest --runxfail --tb=short` 逐条跑，再对照测试夹具与实现
@@ -9,10 +9,11 @@
 | 分类 | 数量 | 处理建议 |
 |---|---:|---|
 | 夹具/断言漂移（已修） | 8 | 已从 xfail 登记表移除 |
-| 夹具/断言漂移（待修） | 6 | 可以修，但需要重写夹具或改断言 |
+| 旧库升级用例（已删除） | 2 | 明确不支持旧库升级，直接删除 |
+| 夹具/断言漂移（待修） | 4 | 可以修，但需要重写夹具或改断言 |
 | 真实行为差异 | 8 | 不要用改测试的方式「修」，需要产品判断 |
 
-当前基线：**1782 passed, 7 skipped, 14 xfailed**（本轮开始前是 1774 / 22）。
+当前基线：**1782 passed, 7 skipped, 12 xfailed**（本轮开始前是 1774 / 22）。
 
 ## 已修复（8）
 
@@ -28,17 +29,22 @@
 
 最后一条不是产品缺陷：迁移本来就不是可重复执行的，测试人为回退版本号才触发了重放。
 
-## 待修（6）：夹具或断言漂移
+## 已删除（2）：旧库升级用例
+
+| 用例 | 为什么删除 |
+|---|---|
+| `test_dialogue_partial_resume::test_revision_migration_preserves_legacy_ids_quotes_fts_and_proofs` | 模拟 v81 库升级，但当前 `add_text_source` 需要 `source.edit_revision`（v97 才加）；本项目不支持旧库升级 |
+| `test_published_graph_version_pointer::test_v82_to_83_restores_exact_checkpoint_version_before_newer_draft` | 同上，模拟 v82 库升级 |
+
+删除后这两个文件里的其余用例（当前行为测试）全部保留并通过。
+
+## 待修（4）：夹具或断言漂移
 
 | 用例 | 根因 | 修复风险 |
 |---|---|---|
-| `test_dialogue_partial_resume::test_revision_migration...` | 把 `MIGRATIONS` 截到 ≤81 后仍调用当前的 `add_text_source`，而它需要 `source.edit_revision`（v97 才加） | 中高：要么用裸 SQL 造旧库，要么给旧库场景单独写导入路径 |
-| `test_published_graph_version_pointer::test_v82_to_83...` | 同上，v82 库 + 当前 `add_text_source` | 中高：同一条路 |
 | `test_knowledge_graph_parse_cleanup::...` | 夹具写入的候选内容还是旧 schema（缺 `category/subject/predicate/value/claim_basis`，`identity_resolution` 取值过期） | 中：按当前 `KnowledgeGraphCandidateContent` 重写夹具 |
 | `test_graph_parser_identity_recovery`（2 条） | `recover_completed_identity_result` 返回 `None`；夹具的 attempts/rows 可能缺新字段或方法 | 中：对照 recovery 准入条件逐项补 |
 | `test_parse_replacement::...` | 被 `protected_fact_relation_index_does_not_match_latest_content` 挡住 | 高：需要判断是夹具索引过期还是替换逻辑真有问题 |
-
-两条 legacy 迁移用例的关键约束：`source.edit_revision` 是 v97 加的，而它们模拟 v81/v82 的库，却调用当前版本的 `add_text_source`。要么绕过该 API，要么把测试目标改成「v96 之前」的兼容路径——后者等于改测试意图，需要先确认产品是否还要支持这么老的库。
 
 ## 真实行为差异（8）：不要只改测试
 
@@ -57,8 +63,7 @@
 
 1. 先处理 `test_knowledge_graph_parse_cleanup` 和 `test_graph_parser_identity_recovery`：都是夹具 schema 漂移，按当前模型补字段即可，风险可控。
 2. `test_parse_replacement` 需要先定位 `protected_fact_relation_index` 的期望内容，再决定改夹具还是改逻辑。
-3. 两条 legacy 迁移用例留到最后，并先确认「是否还需要支持 v81/v82 旧库升级」。
-4. 行为类问题逐条对照原项目确认期望值，不要只改断言。
+3. 行为类问题逐条对照原项目确认期望值，不要只改断言。
 
 ## 复跑
 
