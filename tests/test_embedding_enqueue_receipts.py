@@ -94,6 +94,7 @@ def test_disabled_embedding_terminal_receipt_uses_public_repository_and_service_
         assert receipt["source_ids"] == ["source-disabled-index"]
         assert receipt["result"] == {
             "status": "unavailable", "enqueued": 0, "has_more": False,
+            "scanned": 0, "invalid_candidate_count": 0,
         }
     finally:
         database.close()

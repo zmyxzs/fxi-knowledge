@@ -1,13 +1,15 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 21 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 16 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
 
-The purge-batching case was registered here first and later turned green after
-its test fixture gained the missing ``published_graph_version_id`` column and
-two tables; it is no longer in the registry.
+Six cases registered here first were later repaired and removed: the purge
+batching fixture (missing column and tables), the coverage-delta segment
+fixture, the row-repair runner's nullable schema, the event-resolution
+monkeypatch target, the material-sharing message assertion, and the embedding
+receipt counter assertion.
 
 Maintenance rules:
 
@@ -37,9 +39,6 @@ _KNOWN_FAILURES: dict[str, str] = {
         "v82 to v83 upgrade restores the wrong checkpoint version"
     ),
     # Parse / publication pipeline.
-    "tests/test_graph_parser_coverage_delta.py::test_empty_coverage_delta_preserves_initial_derived_measurement_links": (
-        "empty coverage delta drops the initial derived measurement links"
-    ),
     "tests/test_graph_parser_identity_recovery.py::test_reuses_identity_when_event_groups_pass_and_failure_only_hits_some_sources": (
         "identity recovery does not reuse the identity for partially failed sources"
     ),
@@ -52,18 +51,12 @@ _KNOWN_FAILURES: dict[str, str] = {
     "tests/test_parse_replacement.py::D1ParseReplacementTests::test_replacement_copies_exact_dependency_and_preserves_human_history": (
         "parse replacement is blocked by a protected fact relation index mismatch"
     ),
-    "tests/test_parser_repair_anchor_identity.py::test_instance_repair_preserves_locally_generated_event_identity": (
-        "instance repair loses the locally generated event identity"
-    ),
     # Query / learning behaviour.
     "tests/test_association_entity_source_scope.py::RetrievalSearchStableScopeTests::test_explicit_source_and_folder_selectors_keep_or_semantics": (
         "explicit source/folder selectors do not keep OR semantics"
     ),
     "tests/test_retrieval_search_scope.py::RetrievalSearchStableScopeTests::test_explicit_source_and_folder_selectors_keep_or_semantics": (
         "explicit source/folder selectors do not keep OR semantics"
-    ),
-    "tests/test_event_resolution_history.py::test_two_sided_labels_deduplicate_shared_evidence_after_both_sides_are_checked": (
-        "resolution gate module has no exact_event_candidate_evidence"
     ),
     "tests/test_planning_study_reading.py::test_saved_legacy_request_reuses_owner_and_current_key_takes_precedence[False]": (
         "legacy planning request owner/key precedence is inverted"
@@ -77,17 +70,11 @@ _KNOWN_FAILURES: dict[str, str] = {
     "tests/test_query_material_sharing.py::test_shared_text_does_not_allow_foreign_candidate_decisions": (
         "shared text still allows foreign candidate decisions"
     ),
-    "tests/test_query_material_sharing.py::test_row_without_bound_evidence_cannot_adopt_an_operation_quote": (
-        "a row without bound evidence can adopt an operation quote"
-    ),
     "tests/test_query_register_observations.py::test_execution_cache_contract_only_changes_for_manual_observation_scope[learning-canon_fact-None]": (
         "execution cache contract changes outside manual observation scope"
     ),
     "tests/test_query_register_observations.py::test_execution_cache_contract_only_changes_for_manual_observation_scope[learning-learning_method-None]": (
         "execution cache contract changes outside manual observation scope"
-    ),
-    "tests/test_embedding_enqueue_receipts.py::test_disabled_embedding_terminal_receipt_uses_public_repository_and_service_facades": (
-        "disabled embedding receipt counters differ from the expected terminal state"
     ),
 }
 

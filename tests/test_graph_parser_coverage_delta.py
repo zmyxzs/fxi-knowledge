@@ -63,7 +63,10 @@ def test_empty_coverage_delta_preserves_initial_derived_measurement_links() -> N
     _candidates, _covered, merged = validate_graph_coverage_delta(
         ChatResult(text=delta_text, provider_model="saved-response-fixture", usage={}),
         hydrate_evidence_references=lambda _payload: None,
-        current_segments=[{"ref": "E1"}],
+        current_segments=[{
+            "ref": "E1", "text": "林澈修炼十年。", "start_offset": 0,
+            "end_offset": 7, "evidence_span_id": "span-E1",
+        }],
         initial_output=initial,
         validated_output=validate_merged,
         validation_errors=validation_errors,

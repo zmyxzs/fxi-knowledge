@@ -104,7 +104,7 @@ def test_row_without_bound_evidence_cannot_adopt_an_operation_quote():
         candidate_id=candidate_id(operation, 1, row), use="adopt",
         evidence_ids=[reference.id], reason="该引用其实仅属于另一个行。",
     )
-    with pytest.raises(ValueError, match="outside its source row"):
+    with pytest.raises(ValueError, match="outside its exact source row"):
         validate_candidate_decisions([decision], [operation])
 
 

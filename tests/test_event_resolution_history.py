@@ -6,6 +6,7 @@ import json
 import pytest
 
 from fxi_novel.knowledge import repository_parse_batch_resolution_gate as gate
+from fxi_novel.knowledge import repository_parse_event_attempt_validation as event_attempt_validation
 from fxi_novel.knowledge.event_reconciliation_service import EventVectorReconciliationService
 from fxi_novel.knowledge.event_reconciliation_validation import build_event_review_record
 from fxi_novel.knowledge.repository_parse_event_resolution_gate import (
@@ -75,9 +76,9 @@ def test_two_sided_labels_deduplicate_shared_evidence_after_both_sides_are_check
     prior = _event("prior", "source", "snapshot", "再提钥匙", 6)
     prior.evidence_refs = [*target.evidence_refs, *prior.evidence_refs]
     events = {"target": target, "prior": prior}
-    monkeypatch.setattr(event_gate, "_load_version", lambda _c, *, item_id, version_id:
+    monkeypatch.setattr(event_attempt_validation, "_load_version", lambda _c, *, item_id, version_id:
                         {"typed_event": events[item_id].model_dump(mode="json")})
-    monkeypatch.setattr(event_gate, "exact_event_candidate_evidence", lambda _c, _r, event, **kw: event.evidence_refs)
+    monkeypatch.setattr(event_attempt_validation, "exact_event_candidate_evidence", lambda _c, _r, event, **kw: event.evidence_refs)
     refs = []
     for side, event in (("target", target), ("candidate", prior)):
         data = event.model_dump(mode="json")

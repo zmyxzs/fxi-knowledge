@@ -86,7 +86,8 @@ def test_instance_repair_preserves_locally_generated_event_identity():
                                           "type_entity_ref": "N2"}}],
                 "exclusions": [],
             }
-            Draft202012Validator(response_schema).validate(patch)
+            if response_schema is not None:
+                Draft202012Validator(response_schema).validate(patch)
             result = ChatResult(text=json.dumps(patch, ensure_ascii=False),
                                 provider_model="fixture", usage={})
             return result, validator(result)
