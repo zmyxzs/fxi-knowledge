@@ -12,13 +12,16 @@
 |---|---|
 | `src/fxi_novel/knowledge/` | 知识库主体：来源、解析、检索、方法、状态、资产、登记册、查询 |
 | `src/fxi_novel/storage/` | SQLite 访问、迁移、运行与对话存储 |
-| `src/fxi_novel/models/` | 数据模型 |
+| `src/fxi_novel/models/` | 数据模型与模型网关（`ChatModel` / `ModelGateway`） |
 | `src/fxi_novel/learning/` | 学习链路（研究与知识库共用 owner） |
 | `src/fxi_novel/writing/` | 只保留 3 个被知识库反向引用的模块：`source_scope`、`chapter_author_sources`、`chain_versions` |
 | `src/fxi_novel/prompt_loading.py` | 提示词装载（学习链路要用） |
+| `src/fxi_novel/project_paths.py` | 定位 `prompts/` 与 `config/`：源码树、editable、wheel（`fxi_novel/_data`）三种布局 |
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
-| `tests/` | 只依赖上述包的 183 个测试文件（1795 个用例） |
+| `examples/smoke.py` | 内存库冒烟检查：建库 → 建作品 → 导来源 → 读回 |
+| `docs/` | 验证记录（导入、解析、查询的端到端结果与问题清单） |
+| `tests/` | 只依赖上述包的 184 个测试文件（1800 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
 
@@ -27,10 +30,15 @@
 在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
 
 ```
-22 failed, 1766 passed, 7 skipped in 719s
+22 xfailed, 1771 passed, 7 skipped in 704s
 ```
 
-这 22 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。
+这 22 项在**原项目里用同一批用例跑也全部失败**（已逐条比对），说明抽取本身没有改变行为，失败是抽取前就存在的既有问题。它们登记在 `tests/conftest.py`，以 `xfail(strict=True)` 标记：
+
+- 修好一项会变成 `XPASS`，提醒你从登记表里删掉对应条目；
+- 新增回归仍然是普通 `FAILED`，不会被这层标记吞掉。
+
+登记 xfail 之前，同一条命令的输出是 `22 failed, 1766 passed, 7 skipped in 719s`。
 
 ## 为什么 import 路径还是 `fxi_novel`
 
@@ -40,11 +48,13 @@
 - 在这里改好的模块，可以整体拷回原项目而不必再改 import；
 - 代价是两边不能装进同一个 venv（装进同一个会互相覆盖）。
 
-## 相对原项目的三处适配
+## 相对原项目的五处适配
 
 1. `src/fxi_novel/writing/__init__.py` 被改写成最小版本——原文件会导入 `chapter_check`，那个模块属于写作系统，没有抽过来。
 2. 删除了 39 个测试文件：34 个通过辅助模块间接依赖 `fxi_novel.api` / `fxi_novel.assistant` / `scripts`；另外 5 个是 HTTP 或验收脚本（`test_source_edit_revision`、`test_source_record_history`、`test_source_save_receipts`、`test_d1_query_baseline_run`、`test_style_validation_batches`），按 `scripts/`、`data/validation/` 的绝对路径读文件，属于工具链而不是知识库单元测试。
 3. `prompts/` 与 `config/writing_chains/` 整体复制，因为 `learning` 的服务会按路径读取提示词，`chain_versions.selected_prompt` 也会读链配置。
+4. 删除了 6 个不再被引用的测试辅助文件（`assistant_turn_api_support`、`chapter_planning_archived_fixture`、`generated_quality_review_fixture`、`knowledge_graph_parse_support`、`parse_queue_support`、`sentence_structure_revision_support`）：它们 import 了未抽取的 `api` / `assistant` / `writing` 模块，而现有测试文件对它们零引用。
+5. 新增 `src/fxi_novel/project_paths.py`，并让 `chain_versions.py` / `prompt_loading.py` 用它定位 `prompts/` 与 `config/`；`pyproject.toml` 用 `force-include` 把这两个目录作为包数据打进 wheel（`fxi_novel/_data/`）。这是为「非 editable 安装也能用」做的唯一结构性改动，回迁主项目时注意它和原项目的路径假设不同。
 
 ## 怎么跑
 
@@ -55,6 +65,20 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pytest -q
 ```
 
+冒烟检查（不需要安装、不需要模型、不写磁盘）：
+
+```powershell
+python examples\smoke.py
+```
+
+装到别的环境（提示词与链配置会一起装进去）：
+
+```powershell
+python -m pip install .
+```
+
+wheel 把 `prompts/` 和 `config/writing_chains/` 作为包数据放在 `fxi_novel/_data/`，运行时由 `project_paths.project_root()` 定位，不需要把仓库目录一起带上。
+
 依赖只有 `pydantic`、`numpy`、`jsonschema`、`jieba`、`httpx`；写作系统那套 FastAPI/LangGraph 都不需要。
 
 如果暂时不想建 venv，也可以用原项目的解释器加 `PYTHONPATH` 验证（`PYTHONPATH` 优先于原项目的 editable 安装）：
@@ -63,6 +87,125 @@ python -m venv .venv
 $env:PYTHONPATH='D:\Projects\fxi-knowledge\src'
 D:\Projects\Fxi-novel\.venv\Scripts\python.exe -m pytest -q
 ```
+
+## 程序 API
+
+知识库对外只有一条主链路：`Database` → `KnowledgeRepository` → `KnowledgeService`。
+`KnowledgeService` **不调用模型**，可以完全离线使用；需要模型的是 `LearningService` 和 `ModelGateway`。
+
+```python
+import asyncio
+
+from fxi_novel.knowledge.repository import KnowledgeRepository
+from fxi_novel.knowledge.service import KnowledgeService
+from fxi_novel.storage.database import Database
+
+database = Database(":memory:")  # 换成 "data/fxi_novel.sqlite3" 就是持久库
+database.initialize()            # 显式建表并跑迁移，失败会直接抛异常
+
+knowledge = KnowledgeService(
+    KnowledgeRepository(database, embedding_indexing_enabled=False)
+)
+
+work = knowledge.create_project(space="writing", title="示例作品")
+source = knowledge.add_text_source(
+    title="示例来源",
+    content="第一段：主角走进铺子，先问价。\n\n第二段：掌柜报了价，他改了主意。",
+    space="writing",
+    work_id=work["id"],
+)
+
+hits, notes, coverage = asyncio.run(
+    knowledge.search_planned(
+        ["掌柜 报价"],
+        "writing",
+        work["id"],
+        top_k=3,
+        source_ids=[source.source_id],
+        coverage_mode="focused",
+        coverage_source_limit=1,
+        include_linked_scopes=False,
+    )
+)
+for hit in hits:
+    print(hit.score, hit.text)
+
+database.close()
+```
+
+几个容易踩的点：
+
+- `Database.initialize()` 不会自动执行；不调用就直接查询会得到空库或 `no such table`。
+- `space` 只接受 `"writing"` 和 `"learning"`；`writing` 必须带 `work_id`，跨 space 的读写会被仓储拒绝。
+- `embedding_indexing_enabled=False` 时只建 FTS 投影，检索走词法；要走向量就把参数设为 `True`，并把一个 `embedding_projection` 传给 `KnowledgeService`。
+- `search_planned` 是 `async` 方法，返回 `(命中列表, 诊断信息, 覆盖度)`；`coverage_mode` 目前支持 `"focused"` 和 `"each_source_ending"`。
+- 写入只有一个 owner：`knowledge` / `storage` 里的仓储；FTS 与向量都是可重建投影，`rebuild_search_index()` 可以从权威文本重建 FTS。
+- wheel 安装时提示词目录用 `project_root() / "prompts"`（`from fxi_novel.project_paths import project_root`）；源码/editable 安装会自动解析到仓库根。
+
+## 接模型（可选）
+
+`LearningService` 需要一个 `ChatModel`。仓库自带 `ModelGateway`，按 OpenAI 兼容协议请求
+`{base_url}/chat/completions` 和 `{base_url}/embeddings`，配置从 TOML 读取：
+
+```toml
+# gateway.toml
+[chat]
+enabled = true
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+token_env = "DEEPSEEK_API_KEY"
+timeout_seconds = 90
+
+[embedding]
+enabled = false
+base_url = "https://api.openai.com/v1"
+model = "text-embedding-3-small"
+token_env = "OPENAI_API_KEY"
+dimensions = 1536
+```
+
+```python
+from pathlib import Path
+
+from fxi_novel.learning.service import LearningService
+from fxi_novel.models.gateway import GatewayConfig, ModelGateway
+from fxi_novel.project_paths import project_root
+
+config = GatewayConfig.from_toml(Path("gateway.toml"))
+gateway = ModelGateway(config)
+learning = LearningService(knowledge, gateway, project_root() / "prompts" / "learning")
+```
+
+- `base_url` 只写到版本前缀（如 `/v1`），不要自己拼 `/chat/completions`。
+- token 从 `token_env` 指向的环境变量读取；也可以直接写 `api_key`，但不要提交。
+- 可选路由：`[[chat_fallbacks]]`（数组，按顺序降级）、`[knowledge_query]`、`[creative]`。
+- `embedding.enabled = false` 时向量调用会抛 `ModelUnavailable`，词法检索不受影响。
+- 提示词目录用 `project_root() / "prompts" / "learning"`；`load_prompt()` 会展开 `{{decision_method}}`，并按链版本快照取覆盖文本。
+
+## 环境变量
+
+| 变量 | 用途 | 默认值 |
+|---|---|---|
+| `FXI_NOVEL_DB_PATH` | `Database()` 不传路径时使用的库文件 | `data/fxi_novel.sqlite3` |
+| `FXI_NOVEL_ROOT` | 数据根：包含 `prompts/` 与 `config/` 时优先使用；维护锁/恢复日志也用它 | wheel 用包内 `_data`，源码用仓库根 |
+| `<token_env>` | 网关鉴权 token，变量名由路由的 `token_env` 指定 | 空（不鉴权） |
+
+## 已知限制
+
+1. **22 个既有失败**：都继承自原项目，已在 `tests/conftest.py` 登记为 `xfail(strict=True)`。大致分三类：
+   - 旧库迁移：`edit_revision` / `published_graph_version_id` 列缺失、v82→v83 版本指针、批量 purge；
+   - 解析与发布：候选清理时机、替换依赖、身份恢复、覆盖度增量、解析锚点身份；
+   - 查询与学习：源/文件夹选择器 OR 语义、缓存编译、材料共享、场景窗口预算、观察范围、规划复用、事件消解。
+2. **7 个 skip**：需要 `data/` 下的审计库或验证快照，这些数据没有抽进来；skip 消息里写了缺什么。
+3. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`docs/verification-2026-10-24.md` 有最小实现思路）。
+4. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
+5. **抽取提示词对模型敏感**：同一批章节，Gemini 抽取通过、DeepSeek 抽取 3/3 来源结构校验失败（见验证记录 P2）。
+6. **没有 HTTP / CLI 入口**：这是知识库而不是写作系统；需要对外服务时在上层自行封装（原项目的 `api/` 不在本仓库）。
+7. **没有 LICENSE**：默认保留所有权利，公开或分发前需要补一份。
+
+## 验证记录
+
+2026-10-24 用《神域囚徒》313–315 章做了一次端到端验证：导入 3 章（2736 / 2602 / 3030 字）→ 解析（155 条知识、75 个实体候选、63 个身份组、3/3 来源发布完成）→ 查询（自然语言问题规划出 2 条 requirement，均 supported，21 条证据）。完整数据、耗时和问题清单见 [`docs/verification-2026-10-24.md`](docs/verification-2026-10-24.md)。
 
 ## 并行开发时的边界约定
 
