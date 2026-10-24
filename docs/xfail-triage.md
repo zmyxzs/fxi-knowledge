@@ -1,4 +1,4 @@
-# 既有失败的 triage（22 → 1）
+# 既有失败的 triage（22 → 0）
 
 - 日期：2026-10-24
 - 方法：`pytest --runxfail --tb=short` 逐条跑，再对照测试夹具与实现
@@ -8,11 +8,11 @@
 
 | 分类 | 数量 | 处理建议 |
 |---|---:|---|
-| 夹具/断言漂移（已修） | 19 | 已从 xfail 登记表移除 |
+| 夹具/断言漂移（已修） | 20 | 已从 xfail 登记表移除 |
 | 旧库升级用例（已删除） | 2 | 明确不支持旧库升级，直接删除 |
-| 真实行为差异 | 1 | 不要用改测试的方式「修」，需要产品判断 |
+| 真实行为差异 | 0 | — |
 
-当前基线：**1793 passed, 7 skipped, 1 xfailed**（本轮开始前是 1774 / 22）。
+当前基线：**1794 passed, 7 skipped, 0 xfailed**（本轮开始前是 1774 / 22）。
 
 ## 已修复（8）
 
@@ -32,6 +32,7 @@
 | `test_query_equivalent_operations[writing]` + `test_query_register_observations`（2 条） | 测试构造的「旧 key」漏了基线 settings（`plan_output_contract: 2` / `raw_scene_context_contract: 1`），于是所有 scope 都被判成「契约变化」 | 在旧 key 里补上基线 settings，再比较手动观察范围带来的增量 |
 | `test_query_grounded_scene_read::test_long_discovery_evidence...` | 断言要求把 6000 字的已发现 span 截到 2400；但 `scene_context_span` 的契约是「窗口只限制新增上下文，不截断已发现 span」，同文件 `test_scene_read_preserves_a_discovered_span_larger_than_its_default_window` 也明确断言这一点 | 改为断言保留完整 span，并改名去掉「obeys budget」的误导 |
 | `test_query_material_sharing::test_shared_text_does_not_allow_foreign_candidate_decisions` | 断言期望外来候选决策让整条 requirement 变 `unresolved`；但当前契约是「拒绝这个可选提示、保留独立引用的答案」，`validate_candidate_choices` 的 docstring 明确写了这一点 | 改为断言决策被拒（`candidate_choices_not_validated`）、没有记录被采用，而共享证据仍支持答案 |
+| `test_planning_study_reading::test_saved_legacy_request_reuses_owner_and_current_key_takes_precedence[False]` | 测试用 `read_text` 读原始提示词构造 system message，而服务用 `load_prompt` 展开 `{{decision_method}}`，两者 prompt hash 不同，legacy 幂等 key 自然对不上 | 测试改用 `load_prompt`，与服务的 system message 完全一致 |
 
 最后一条不是产品缺陷：迁移本来就不是可重复执行的，测试人为回退版本号才触发了重放。
 
@@ -48,23 +49,15 @@
 
 所有夹具/断言漂移都已修完；剩下 8 项都是真实行为差异。
 
-## 真实行为差异（1）：不要只改测试
+## 真实行为差异（0）
 
-| 用例 | 现象 | 涉及语义 |
-|---|---|---|
-| `test_planning_study_reading[False]` | 旧保存请求复用时返回了另一个 id（owner/current key 优先级） | 规划请求复用 |
+22 项全部处理完：20 项是夹具/断言漂移（已修），2 项是旧库升级用例（已删除）。没有需要产品判断的遗留项。
 
-这条要么是快照里的真实缺陷，要么是产品语义在抽取后发生了变化。修它需要先确定「期望行为是哪一边」，否则改测试只会掩盖问题。
-
-> 注：选择器 OR 语义、查询缓存契约、场景窗口、材料共享边界都不在表内——查下来语义没有坏，是测试里的旧 key / 旧 scope 形状 / 旧截断假设 / 旧失败语义没跟上实现。
-
-## 建议顺序
-
-只剩 `test_planning_study_reading[False]`：需要确认保存请求的 owner/current key 优先级。对照原项目确认期望值后再动代码。
+> 复盘：这批失败里没有发现产品逻辑回归。共同原因是抽取快照里的测试没有跟上实现演进——候选内容 schema、幂等 key 的基线 settings、`_search_scopes` 的解析结果、场景窗口的保留策略、可选候选决策的失败语义，以及提示词的 `{{decision_method}}` 展开。
 
 ## 复跑
 
 ```powershell
 $env:PYTHONPATH='D:\Projects\fxi-knowledge\src'
-python -m pytest -q --runxfail --tb=short <node-id>...
+python -m pytest -q
 ```
