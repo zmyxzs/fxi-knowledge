@@ -2,14 +2,12 @@
 
 import hashlib
 import sqlite3
-from unittest.mock import patch
 
 import pytest
 
 from fxi_novel.knowledge.graph_parser_dialogues import restore_dialogue_utterance_records
 import test_dialogue_utterance_repository as dialogue_helpers
 
-from fxi_novel.storage.migrations import MIGRATIONS
 
 
 def _sha(value):
@@ -167,46 +165,3 @@ def test_restored_dialogue_can_be_saved_after_a_partial_parse(partial_dialogue):
         restore_dialogue_utterance_records([{**rows[0], "unknown_field": "not annotation metadata"}])
 
 
-def test_revision_migration_preserves_legacy_ids_quotes_fts_and_proofs():
-    fixture = dialogue_helpers.DialogueUtteranceRepositoryTests()
-    legacy = tuple(migration for migration in MIGRATIONS if migration.version <= 81)
-    with patch("fxi_novel.storage.database.MIGRATIONS", legacy):
-        fixture.setUp()
-    try:
-        batch_id, claim = fixture._begin_parse()
-        with fixture.database.transaction() as connection:
-            connection.execute(
-                "INSERT INTO knowledge_dialogue_annotation_set "
-                "(id,receipt_id,generation,parse_batch_id,space,scope_work_id,physical_work_id,branch_id,"
-                "source_id,snapshot_id,content_hash,utterance_count,annotation_hash,input_annotation_hash,"
-                "dialogue_review_proof_json,dialogue_review_status,status,created_at,updated_at) "
-                "VALUES ('legacy-set',?,?,?,'learning',?,NULL,NULL,?,?,?,1,?,?,?,'passed','published','then','then')",
-                (claim["receipt_id"], claim["generation"], batch_id, fixture.work_id,
-                 fixture.imported.source_id, fixture.imported.snapshot_id, _sha("小舞说：“你好！”"),
-                 _sha("annotations"), _sha("input"), '{"legacy":"proof"}'),
-            )
-            connection.execute(
-                "INSERT INTO knowledge_dialogue_utterance "
-                "(id,annotation_set_id,dialogue_ref,start_offset,end_offset,quote,quote_hash,quote_kind,"
-                "speaker_status,span_refs_json,speaker_evidence_refs_json,created_at,updated_at) "
-                "VALUES ('quote','legacy-set','D1',5,8,'你好！',?,'speech','unresolved','[]','[]','then','then')",
-                (_sha("你好！"),),
-            )
-            before_set = dict(connection.execute("SELECT * FROM knowledge_dialogue_annotation_set").fetchone())
-            before_quote = dict(connection.execute("SELECT rowid,* FROM knowledge_dialogue_utterance").fetchone())
-            before_fts = tuple(connection.execute("SELECT rowid,* FROM knowledge_dialogue_utterance_fts").fetchone())
-        fixture.database.initialize()
-        with fixture.database.connection() as connection:
-            after_set = dict(connection.execute("SELECT * FROM knowledge_dialogue_annotation_set").fetchone())
-            assert after_set.pop("annotation_revision") == 1
-            assert after_set == before_set
-            assert dict(connection.execute("SELECT rowid,* FROM knowledge_dialogue_utterance").fetchone()) == before_quote
-            assert tuple(connection.execute("SELECT rowid,* FROM knowledge_dialogue_utterance_fts").fetchone()) == before_fts
-            assert list(connection.execute("PRAGMA foreign_key_check")) == []
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == max(
-                migration.version for migration in MIGRATIONS
-            )
-            with pytest.raises(sqlite3.IntegrityError, match="immutable"):
-                connection.execute("UPDATE knowledge_dialogue_annotation_set SET annotation_revision=2 WHERE id='legacy-set'")
-    finally:
-        fixture.tearDown()

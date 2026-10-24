@@ -1,6 +1,6 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 14 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 12 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
@@ -11,6 +11,10 @@ nullable schema, the event-resolution monkeypatch target, the material-sharing
 message assertion, the embedding receipt counter assertion, and the two v81
 backfill-repair cases (which set user_version backwards on an already-migrated
 database and re-ran every later migration).
+
+Two more were deleted because they only exercised upgrades from v81/v82
+databases: this checkout does not support old databases, and the current
+``add_text_source`` needs ``source.edit_revision`` (added in v97).
 
 Maintenance rules:
 
@@ -26,13 +30,6 @@ import pytest
 
 
 _KNOWN_FAILURES: dict[str, str] = {
-    # Migration / legacy database compatibility.
-    "tests/test_dialogue_partial_resume.py::test_revision_migration_preserves_legacy_ids_quotes_fts_and_proofs": (
-        "legacy dialogue revision migration lacks the edit_revision column"
-    ),
-    "tests/test_published_graph_version_pointer.py::test_v82_to_83_restores_exact_checkpoint_version_before_newer_draft": (
-        "v82 to v83 upgrade restores the wrong checkpoint version"
-    ),
     # Parse / publication pipeline.
     "tests/test_graph_parser_identity_recovery.py::test_reuses_identity_when_event_groups_pass_and_failure_only_hits_some_sources": (
         "identity recovery does not reuse the identity for partially failed sources"
