@@ -1,4 +1,4 @@
-# 既有失败的 triage（22 → 3）
+# 既有失败的 triage（22 → 2）
 
 - 日期：2026-10-24
 - 方法：`pytest --runxfail --tb=short` 逐条跑，再对照测试夹具与实现
@@ -8,11 +8,11 @@
 
 | 分类 | 数量 | 处理建议 |
 |---|---:|---|
-| 夹具/断言漂移（已修） | 17 | 已从 xfail 登记表移除 |
+| 夹具/断言漂移（已修） | 18 | 已从 xfail 登记表移除 |
 | 旧库升级用例（已删除） | 2 | 明确不支持旧库升级，直接删除 |
-| 真实行为差异 | 3 | 不要用改测试的方式「修」，需要产品判断 |
+| 真实行为差异 | 2 | 不要用改测试的方式「修」，需要产品判断 |
 
-当前基线：**1791 passed, 7 skipped, 3 xfailed**（本轮开始前是 1774 / 22）。
+当前基线：**1792 passed, 7 skipped, 2 xfailed**（本轮开始前是 1774 / 22）。
 
 ## 已修复（8）
 
@@ -30,6 +30,7 @@
 | `test_parse_replacement::...` | 受保护事实是 rejected/draft、没有发布指针，索引器不写 `knowledge_graph_relation_reference`；另外测试注入的 purge 还是旧签名 | 夹具显式写关系索引行；purge 包一层带 `owner_kind` / `space` / `work_id` 的适配器 |
 | `test_retrieval_search_scope` + `test_association_entity_source_scope`（同一用例两份） | 断言期望的是「原始选择器元组」，而 `_search_scopes` 已改成把 source/folder 解析成精确 source 列表（OR 语义仍然成立） | 改为断言解析后的单 scope：`work_id=None`、`folder_ids=None`、source 集合为两者并集 |
 | `test_query_equivalent_operations[writing]` + `test_query_register_observations`（2 条） | 测试构造的「旧 key」漏了基线 settings（`plan_output_contract: 2` / `raw_scene_context_contract: 1`），于是所有 scope 都被判成「契约变化」 | 在旧 key 里补上基线 settings，再比较手动观察范围带来的增量 |
+| `test_query_grounded_scene_read::test_long_discovery_evidence...` | 断言要求把 6000 字的已发现 span 截到 2400；但 `scene_context_span` 的契约是「窗口只限制新增上下文，不截断已发现 span」，同文件 `test_scene_read_preserves_a_discovered_span_larger_than_its_default_window` 也明确断言这一点 | 改为断言保留完整 span，并改名去掉「obeys budget」的误导 |
 
 最后一条不是产品缺陷：迁移本来就不是可重复执行的，测试人为回退版本号才触发了重放。
 
@@ -46,25 +47,23 @@
 
 所有夹具/断言漂移都已修完；剩下 8 项都是真实行为差异。
 
-## 真实行为差异（3）：不要只改测试
+## 真实行为差异（2）：不要只改测试
 
 | 用例 | 现象 | 涉及语义 |
 |---|---|---|
 | `test_planning_study_reading[False]` | 旧保存请求复用时返回了另一个 id（owner/current key 优先级） | 规划请求复用 |
-| `test_query_grounded_scene_read` | 场景窗口预算 2400，实际引文 6000 | 阅读窗口裁剪 |
 | `test_query_material_sharing::test_shared_text...` | 外来候选决策仍被判为 supported | 材料共享边界 |
 
 这些要么是快照里的真实缺陷，要么是产品语义在抽取后发生了变化。修它们需要先确定「期望行为是哪一边」，否则改测试只会掩盖问题。
 
-> 注：选择器 OR 语义和查询缓存契约都不在表内——查下来语义没有坏，是测试里的旧 key / 旧 scope 形状没跟上实现。
+> 注：选择器 OR 语义、查询缓存契约、场景窗口都不在表内——查下来语义没有坏，是测试里的旧 key / 旧 scope 形状 / 旧截断假设没跟上实现。
 
 ## 建议顺序
 
-剩下的 3 项都需要产品判断：
+剩下的 2 项都需要产品判断：
 
-1. 场景窗口预算——影响阅读上下文长度，先确认 2400 是不是硬上限。
-2. 材料共享边界——影响跨候选证据复用，需要确认「外来候选」的授权模型。
-3. 规划请求复用——影响保存请求的幂等，需要确认 owner/current key 的优先级。
+1. 材料共享边界——需要确认「外来候选」的授权模型。
+2. 规划请求复用——需要确认 owner/current key 的优先级。
 
 逐条对照原项目确认期望值后再动代码，不要只改断言。
 
