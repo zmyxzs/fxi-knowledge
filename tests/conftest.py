@@ -1,15 +1,16 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 16 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 14 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
 
-Six cases registered here first were later repaired and removed: the purge
-batching fixture (missing column and tables), the coverage-delta segment
-fixture, the row-repair runner's nullable schema, the event-resolution
-monkeypatch target, the material-sharing message assertion, and the embedding
-receipt counter assertion.
+Eight cases registered here first were later repaired and removed: the purge
+batching fixture, the coverage-delta segment fixture, the row-repair runner's
+nullable schema, the event-resolution monkeypatch target, the material-sharing
+message assertion, the embedding receipt counter assertion, and the two v81
+backfill-repair cases (which set user_version backwards on an already-migrated
+database and re-ran every later migration).
 
 Maintenance rules:
 
@@ -28,12 +29,6 @@ _KNOWN_FAILURES: dict[str, str] = {
     # Migration / legacy database compatibility.
     "tests/test_dialogue_partial_resume.py::test_revision_migration_preserves_legacy_ids_quotes_fts_and_proofs": (
         "legacy dialogue revision migration lacks the edit_revision column"
-    ),
-    "tests/test_embedding_candidate_migration.py::test_v81_additive_repair_preserves_jobs_and_existing_backfill[True]": (
-        "migration fixture lacks the receipt-generation uniqueness the repair requires"
-    ),
-    "tests/test_embedding_candidate_migration.py::test_v81_additive_repair_preserves_jobs_and_existing_backfill[False]": (
-        "migration fixture lacks the receipt-generation uniqueness the repair requires"
     ),
     "tests/test_published_graph_version_pointer.py::test_v82_to_83_restores_exact_checkpoint_version_before_newer_draft": (
         "v82 to v83 upgrade restores the wrong checkpoint version"

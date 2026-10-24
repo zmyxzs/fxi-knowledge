@@ -101,9 +101,12 @@ def test_candidate_embedding_migration_preserves_jobs_and_separates_cache_revisi
 @pytest.mark.parametrize("missing_backfill", [True, False])
 def test_v81_additive_repair_preserves_jobs_and_existing_backfill(missing_backfill):
     database = Database(":memory:")
-    database.initialize()
     try:
         with database.connection() as connection:
+            for migration in MIGRATIONS:
+                if migration.version > 80:
+                    break
+                apply_migration(connection, migration)
             connection.execute("INSERT INTO embedding_projection_job VALUES (?,?,?,?,?,?,?,?,?,?,?,?)", (
                 "kept-job", "chunk", "kept-source", "a" * 64, "route", "provider", "model",
                 "complete", 1, None, "created", "updated",
@@ -114,10 +117,12 @@ def test_v81_additive_repair_preserves_jobs_and_existing_backfill(missing_backfi
                 connection.execute("INSERT INTO embedding_projection_candidate_backfill VALUES (?,?,?,?,?,?,?,?,?)", (
                     "kept-scope", "route", "{}", "cursor", "upper", 7, "completed", "created", "updated",
                 ))
-            connection.execute("PRAGMA user_version = 80")
             connection.commit()
-        database.initialize()
-        database.initialize()
+
+        repair = next(migration for migration in MIGRATIONS if migration.version == 81)
+        with database.connection() as connection:
+            apply_migration(connection, repair)
+            apply_migration(connection, repair)
         with database.connection() as connection:
             assert connection.execute("PRAGMA user_version").fetchone()[0] == 81
             job = connection.execute("SELECT target_id,status,attempts FROM embedding_projection_job").fetchone()
