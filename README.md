@@ -20,7 +20,8 @@
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
-| `docs/` | 验证记录、发布语义、xfail triage |
+| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash 方案 |
+| `scripts/` | 仓库本地工具（`dump_baseline_schema.py` 生成 baseline schema 草稿） |
 | `tests/` | 只依赖上述包的 185 个测试文件（1801 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
