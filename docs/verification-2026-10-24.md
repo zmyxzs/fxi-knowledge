@@ -112,7 +112,11 @@ parser = KnowledgeGraphParseService(
   - 「【综合战力判定：中六品】」
   - 「【玩家杨凌，修为判定：下六品】」
 
-检索（`search_planned`）：命中里出现知识条目文本，如「杨凌 · 基础力量 · 99点」，但 `knowledge_cards` 字段为空。
+检索（`search_planned`）：命中里出现知识条目文本，如「杨凌 · 基础力量 · 99点」。首次调用没有传 `branch`，`knowledge_cards` 为空；补传 `branch="main"` 后每个命中带 2–3 张卡片，例如：
+
+- 「杨凌 · 等级 · 80级」「杨凌 · 连升等级 · 4 级」
+- 「气血太岁 · 增涨气血 · 3000 点」「气血太岁 · 持有状态 · 杨凌持有」
+- 「杨凌 · 基础力量数值 · 99 点」
 
 ## 4. 发现的问题
 
@@ -122,7 +126,7 @@ parser = KnowledgeGraphParseService(
 | P1 | 事件整理硬性要求 DeepSeek | `event_reconciliation_review_execution` 校验 `provider_model` 含 "deepseek"；用 Gemini 时 resolution 必然失败（错误信息为 "requires DeepSeek"）。本次改为 Gemini 抽取 + DeepSeek 事件复核的混合装配。 |
 | P2 | DeepSeek 抽取默认配置会耗尽输出预算 | 同一批章节用 DeepSeek 做初次抽取时 3/3 来源 `review_incomplete`。查 `knowledge_parse_unit_attempt` 发现 `finish_reason=length`、`completion_tokens=16000` 全部是 reasoning、正文为空。把 `reasoning_effort` 设为 `"none"` 后单章抽取 17 次调用、批次 `completed`（92 条知识、33 个身份组、4 对事件复核）。不是 schema 不兼容。 |
 | P2 | 跨章节重复事件只部分合并 | 「杨凌进入吞天道宫副本」3 条、「风神金刚腿晋升出神入化」2 条、「杨凌升级80级」3 条仍并存；事件整理只复核了 1 对，其余被规则以粒度/类型冲突排除。 |
-| P2 | `search_planned` 的 `knowledge_cards` 为空 | 命中的知识条目以文本片段出现，但 `hit.knowledge_cards` 始终为 0；需要确认卡片附着是否只走另一条查询路径。 |
+| P2 | `search_planned` 的 `knowledge_cards` 为空 | 不是缺陷：调用时没传 `branch`，`writing` 空间的卡片会按分支过滤掉。补传 `branch="main"` 后每个命中带 2–3 张卡片（如「杨凌 · 等级 · 80级」「气血太岁 · 增涨气血 · 3000 点」）。 |
 | P3 | 项目级发布指针缺失 | `knowledge_project` 没有 `published_graph_version_id` 列（已知 xfail 之一），item 级发布不受影响，但项目级指针不可用。 |
 | P3 | 条目 `status` 仍为 `draft` | 155 条都有 `published_graph_version_id` 且进入投影/FTS，但 `knowledge_item.status` 和 `knowledge_version.status` 都是 `draft`；发布语义靠指针而不是 status，容易误读。 |
 

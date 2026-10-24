@@ -120,6 +120,7 @@ hits, notes, coverage = asyncio.run(
         ["掌柜 报价"],
         "writing",
         work["id"],
+        branch="main",
         top_k=3,
         source_ids=[source.source_id],
         coverage_mode="focused",
@@ -139,6 +140,7 @@ database.close()
 - `space` 只接受 `"writing"` 和 `"learning"`；`writing` 必须带 `work_id`，跨 space 的读写会被仓储拒绝。
 - `embedding_indexing_enabled=False` 时只建 FTS 投影，检索走词法；要走向量就把参数设为 `True`，并把一个 `embedding_projection` 传给 `KnowledgeService`。
 - `search_planned` 是 `async` 方法，返回 `(命中列表, 诊断信息, 覆盖度)`；`coverage_mode` 目前支持 `"focused"` 和 `"each_source_ending"`。
+- `writing` 空间检索要传 `branch`（如 `"main"`）：不传时 `knowledge_cards` 会被分支过滤掉，只剩原文命中。
 - 写入只有一个 owner：`knowledge` / `storage` 里的仓储；FTS 与向量都是可重建投影，`rebuild_search_index()` 可以从权威文本重建 FTS。
 - wheel 安装时提示词目录用 `project_root() / "prompts"`（`from fxi_novel.project_paths import project_root`）；源码/editable 安装会自动解析到仓库根。
 
