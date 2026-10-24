@@ -160,6 +160,7 @@ def test_execution_cache_contract_only_changes_for_manual_observation_scope(tmp_
         get_query_reuse_revision=lambda: "revision"), prompt_path=prompt,
         chat_model=SimpleNamespace(query_cache_identity="same-model"), max_input_characters=10000)
     old = model_request_cache_key("execution", {"spec": spec.model_dump(mode="json"), "scope_hash": "scope-hash"},
-        assessor.chat_model, prompt.read_text(encoding="utf-8"), settings={"max_input_characters": 10000})
+        assessor.chat_model, prompt.read_text(encoding="utf-8"),
+        settings={"max_input_characters": 10000, "raw_scene_context_contract": 1})
     current = prepare_execution_reuse(assessor, spec).key
     assert (current != old) is (space == "writing" and purpose == "work_fact")

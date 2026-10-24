@@ -63,5 +63,6 @@ def test_cache_compilation_contract_keeps_old_duplicate_learning_plans_separate(
     planner = SimpleNamespace(chat_model=SimpleNamespace(query_cache_identity="model"),
         knowledge=SimpleNamespace(query_reuse_scope=lambda scope: ("scope", [])))
     current, _ = prepare_plan_reuse(planner, scope, "input", "prompt", None)
-    old = model_request_cache_key("plan", {"scope_hash": "scope", "input": "input", "context": None}, planner.chat_model, "prompt")
+    old = model_request_cache_key("plan", {"scope_hash": "scope", "input": "input", "context": None}, planner.chat_model, "prompt",
+        settings={"plan_output_contract": 2})
     assert (current != old) == (space == "learning")
