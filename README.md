@@ -20,7 +20,7 @@
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
-| `docs/` | 验证记录（导入、解析、查询的端到端结果与问题清单） |
+| `docs/` | 验证记录、发布语义说明 |
 | `tests/` | 只依赖上述包的 185 个测试文件（1803 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
@@ -148,6 +148,7 @@ database.close()
 - `embedding_indexing_enabled=False` 时只建 FTS 投影，检索走词法；要走向量就把参数设为 `True`，并把一个 `embedding_projection` 传给 `KnowledgeService`。
 - `search_planned` 是 `async` 方法，返回 `(命中列表, 诊断信息, 覆盖度)`；`coverage_mode` 目前支持 `"focused"` 和 `"each_source_ending"`。
 - `writing` 空间检索要传 `branch`（如 `"main"`）：不传时 `knowledge_cards` 会被分支过滤掉，只剩原文命中。
+- 判断是否发布看 `knowledge_item.published_graph_version_id` 指针，不看 `status`（解析后仍是 `draft` 属正常）；详见 [`docs/publication-semantics.md`](docs/publication-semantics.md)。
 - 写入只有一个 owner：`knowledge` / `storage` 里的仓储；FTS 与向量都是可重建投影，`rebuild_search_index()` 可以从权威文本重建 FTS。
 - wheel 安装时提示词目录用 `project_root() / "prompts"`（`from fxi_novel.project_paths import project_root`）；源码/editable 安装会自动解析到仓库根。
 

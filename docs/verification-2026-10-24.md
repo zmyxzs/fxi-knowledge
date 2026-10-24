@@ -128,7 +128,7 @@ parser = KnowledgeGraphParseService(
 | P2 | 跨章节重复事件只部分合并 | 「杨凌进入吞天道宫副本」3 条、「风神金刚腿晋升出神入化」2 条、「杨凌升级80级」3 条仍并存；事件整理只复核了 1 对，其余被规则以粒度/类型冲突排除。 |
 | P2 | `search_planned` 的 `knowledge_cards` 为空 | 不是缺陷：调用时没传 `branch`，`writing` 空间的卡片会按分支过滤掉。补传 `branch="main"` 后每个命中带 2–3 张卡片（如「杨凌 · 等级 · 80级」「气血太岁 · 增涨气血 · 3000 点」）。 |
 | P3 | 项目级发布指针缺失 | `knowledge_project` 没有 `published_graph_version_id` 列（已知 xfail 之一），item 级发布不受影响，但项目级指针不可用。 |
-| P3 | 条目 `status` 仍为 `draft` | 155 条都有 `published_graph_version_id` 且进入投影/FTS，但 `knowledge_item.status` 和 `knowledge_version.status` 都是 `draft`；发布语义靠指针而不是 status，容易误读。 |
+| P3 | 条目 `status` 仍为 `draft` | 已文档化：发布看 `published_graph_version_id` 指针，`status` 是生命周期字段（见 `docs/publication-semantics.md`）。 |
 
 ## 5. DeepSeek 抽取失败的真实原因
 
