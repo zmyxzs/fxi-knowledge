@@ -225,7 +225,6 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 4. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
 5. **DeepSeek 抽取要关闭推理或提高输出预算**：默认 16000 输出 token 会被 reasoning 全部占用（`finish_reason=length`、正文为空），表现为 `review_incomplete`；把 `reasoning_effort` 设为 `"none"` 后单章抽取可完成（见验证记录第 5 节）。
 6. **没有 HTTP / CLI 入口**：这是知识库而不是写作系统；需要对外服务时在上层自行封装（原项目的 `api/` 不在本仓库）。
-7. **没有 LICENSE**：默认保留所有权利，公开或分发前需要补一份。
 
 ## 验证记录
 
@@ -243,3 +242,7 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 1. 先跑这里的 `pytest -q`，记下通过率作为基线（主项目同一批测试的结果可以按同一份用例清单对照）。
 2. 比较时固定数据：用同一个 `fxi_novel.sqlite3` 的**副本**，不要两边同时写主库。
 3. 判断"哪边效果好"要落在可观察结果上：同一批查询/学习任务的产物、调用次数、失败恢复，而不是代码行数或测试数量。
+
+## License
+
+MIT，见 [LICENSE](LICENSE)。
