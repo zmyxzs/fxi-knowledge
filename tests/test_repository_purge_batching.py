@@ -25,10 +25,13 @@ def _purge_test_connection(item_count: int) -> tuple[sqlite3.Connection, list[st
         CREATE TABLE knowledge_item_fts(item_id TEXT);
         CREATE TABLE knowledge_graph_fts(item_id TEXT);
         CREATE TABLE embedding_projection(target_type TEXT, target_id TEXT);
+        CREATE TABLE embedding_projection_job(target_type TEXT, target_id TEXT);
+        CREATE TABLE knowledge_query_reviewed_claim_publication(candidate_item_id TEXT);
         CREATE TABLE knowledge_version_evidence(knowledge_version_id TEXT, evidence_span_id TEXT);
         CREATE TABLE knowledge_item(
             id TEXT, kind TEXT DEFAULT 'fact', space TEXT DEFAULT 'learning',
-            work_id TEXT, status TEXT DEFAULT 'draft', origin_parse_receipt_id TEXT
+            work_id TEXT, status TEXT DEFAULT 'draft', origin_parse_receipt_id TEXT,
+            published_graph_version_id TEXT
         );
         """
     )

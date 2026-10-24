@@ -1,9 +1,13 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 22 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 21 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
+
+The purge-batching case was registered here first and later turned green after
+its test fixture gained the missing ``published_graph_version_id`` column and
+two tables; it is no longer in the registry.
 
 Maintenance rules:
 
@@ -28,9 +32,6 @@ _KNOWN_FAILURES: dict[str, str] = {
     ),
     "tests/test_embedding_candidate_migration.py::test_v81_additive_repair_preserves_jobs_and_existing_backfill[False]": (
         "migration fixture lacks the receipt-generation uniqueness the repair requires"
-    ),
-    "tests/test_repository_purge_batching.py::test_purge_handles_more_than_32766_ids_with_legacy_sqlite_limit_atomically": (
-        "purge batching still trips the legacy SQLite variable limit"
     ),
     "tests/test_published_graph_version_pointer.py::test_v82_to_83_restores_exact_checkpoint_version_before_newer_draft": (
         "v82 to v83 upgrade restores the wrong checkpoint version"
