@@ -485,12 +485,12 @@ class RetrievalSearchStableScopeTests(unittest.TestCase):
             [self.chapter_folder["id"]],
         )
 
+        self.assertEqual(len(scopes), 1)
+        space, work_id, resolved_source_ids, folder_ids = scopes[0]
+        self.assertEqual((space, work_id, folder_ids), ("learning", None, None))
         self.assertEqual(
-            scopes,
-            [(
-                "learning", None, [self.d1_second_source.source_id],
-                [self.chapter_folder["id"]],
-            )],
+            set(resolved_source_ids or []),
+            {self.d1_source.source_id, self.d1_second_source.source_id},
         )
         hits = self.repository.search_lexical(
             "魂环 年限", "learning", None, 10,

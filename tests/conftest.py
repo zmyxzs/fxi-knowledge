@@ -1,11 +1,11 @@
 """Known pre-existing failures, registered as strict xfail.
 
-These 8 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
+These 6 cases fail identically in the source project (``D:\\Projects\\Fxi-novel``)
 with the same test bodies, so the extraction did not introduce them. Keeping
 them as ``xfail(strict=True)`` gives ``pytest -q`` a clean baseline and turns an
 accidental fix into a loud ``XPASS`` instead of a silent pass.
 
-Twelve cases registered here first were later repaired and removed: the purge
+Fourteen cases registered here first were later repaired and removed: the purge
 batching fixture, the coverage-delta segment fixture, the row-repair runner's
 nullable schema, the event-resolution monkeypatch target, the material-sharing
 message assertion, the embedding receipt counter assertion, the two v81
@@ -13,8 +13,9 @@ backfill-repair cases (which set user_version backwards on an already-migrated
 database and re-ran every later migration), the parse-generation cleanup
 fixture (which still wrote the pre-``category`` candidate content shape), the
 two identity-recovery fixtures (missing the semantic-review eligibility
-record), and the parse-replacement fixture (missing its relation index and
-using the old purge signature).
+record), the parse-replacement fixture (missing its relation index and using
+the old purge signature), and the selector OR-semantics assertions (which
+expected the pre-resolution scope tuple instead of the resolved source list).
 
 Two more were deleted because they only exercised upgrades from v81/v82
 databases: this checkout does not support old databases, and the current
@@ -35,12 +36,6 @@ import pytest
 
 _KNOWN_FAILURES: dict[str, str] = {
     # Query / learning behaviour.
-    "tests/test_association_entity_source_scope.py::RetrievalSearchStableScopeTests::test_explicit_source_and_folder_selectors_keep_or_semantics": (
-        "explicit source/folder selectors do not keep OR semantics"
-    ),
-    "tests/test_retrieval_search_scope.py::RetrievalSearchStableScopeTests::test_explicit_source_and_folder_selectors_keep_or_semantics": (
-        "explicit source/folder selectors do not keep OR semantics"
-    ),
     "tests/test_planning_study_reading.py::test_saved_legacy_request_reuses_owner_and_current_key_takes_precedence[False]": (
         "legacy planning request owner/key precedence is inverted"
     ),
