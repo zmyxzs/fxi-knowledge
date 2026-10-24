@@ -90,7 +90,7 @@ def test_different_discovered_scenes_are_distinct_operations(scene):
     assert operation_fingerprint(first) != operation_fingerprint(second)
 
 
-def test_long_discovery_evidence_still_obeys_scene_window_budget(scene):
+def test_long_discovery_evidence_preserves_the_discovered_span_beyond_the_window(scene):
     service, spec, basis, row = scene
     imported = service.repository.add_text_source("第0002章 长场景", "场景" * 3000, "learning")
     snapshot = service.get_current_query_source_snapshots([imported.source_id])[imported.source_id]
@@ -109,5 +109,8 @@ def test_long_discovery_evidence_still_obeys_scene_window_budget(scene):
     operation = result.operation_results[0]
     assert operation.status == "retrieved" and not operation.complete
     reference = operation.evidence_refs[0]
-    assert len(reference.quote) == 2400
+    # The default 2400-character window only bounds added context: a discovered
+    # span longer than the window is kept whole rather than truncated.
+    assert (reference.start_offset, reference.end_offset) == (0, len(snapshot["content"]))
+    assert reference.quote == snapshot["content"]
     assert snapshot["content"][reference.start_offset:reference.end_offset] == reference.quote
