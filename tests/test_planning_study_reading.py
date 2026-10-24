@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from fxi_novel.learning.service_style_reading import add_style_reading_payload
+from fxi_novel.prompt_loading import load_prompt
 from test_style_study_reading import context
 
 
@@ -198,7 +199,7 @@ def test_saved_legacy_request_reuses_owner_and_current_key_takes_precedence(cont
         del source["evidence_refs"]
         source["evidence_chunks"] = context.raw["evidence"]
     messages = [
-        {"role": "system", "content": (ROOT / "prompts/learning/planning-study.md").read_text(encoding="utf-8").strip()},
+        {"role": "system", "content": load_prompt(ROOT / "prompts/learning/planning-study.md")},
         {"role": "user", "content": json.dumps(prior_payload, ensure_ascii=False, allow_nan=False, separators=(",", ":"))},
     ]
     prompt_hash = hashlib.sha256(json.dumps(messages, ensure_ascii=False, sort_keys=True,
