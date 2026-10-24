@@ -91,8 +91,12 @@ def test_shared_text_does_not_allow_foreign_candidate_decisions(tmp_path):
             return response, validator(response)
 
     result, _ = run(tmp_path, spec, batch, ForeignDecision())
-    assert [item.outcome for item in result.requirements] == ["supported", "unresolved"]
-    assert "assessment_row_not_validated" in result.requirements[1].missing_basis
+    # The foreign decision is rejected as an optional hint; the requirement's
+    # independently cited shared evidence still supports the answer.
+    assert [item.outcome for item in result.requirements] == ["supported", "supported"]
+    assert "candidate_choices_not_validated" in result.requirements[1].missing_basis
+    assert "candidate_choice_0_not_validated" in result.requirements[1].missing_basis
+    assert result.operation_results[1].records == []
 
 
 def test_row_without_bound_evidence_cannot_adopt_an_operation_quote():
