@@ -72,7 +72,8 @@ def test_whole_source_reads_once_and_keeps_all_citations_and_saved_authority(con
     legacy_source = {key: value for key, value in source.items()
                      if key not in {"reading_texts", "evidence_refs"}}
     legacy_source["evidence_chunks"] = original["evidence"]
-    compact = lambda value: json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    def compact(value):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     assert len(compact(source)) < len(compact(legacy_source))
 
 

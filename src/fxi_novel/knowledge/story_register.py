@@ -95,7 +95,7 @@ def project_register(records, *, source_pins, work_id, branch_id, manifest_revis
                             **item["entry"].model_dump(mode="json")} for item in history]}
         events = []
         for item in history:
-            value, ref = item["entry"], item["evidence"]
+            value = item["entry"]
             if value.event_kind is None:
                 continue
             events.append(TypedEvent(id=item["id"], canonical_event_id=item["id"], kind=value.event_kind,

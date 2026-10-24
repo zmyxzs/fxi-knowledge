@@ -37,3 +37,22 @@ pythonpath = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+# The service/repository facades compose mixins with explicit star imports.
+ignore = ["F403", "F405"]
+
+[tool.ruff.lint.per-file-ignores]
+# Re-export hubs: these names are imported for downstream `import *` consumers.
+"src/fxi_novel/knowledge/repository_support.py" = ["F401"]
+"src/fxi_novel/knowledge/service_support.py" = ["F401"]
+"src/fxi_novel/learning/service_support.py" = ["F401"]
+"src/fxi_novel/knowledge/retrieval_support.py" = ["F401"]
+"src/fxi_novel/knowledge/models.py" = ["F401"]
+"src/fxi_novel/knowledge/models_base.py" = ["F401"]
+"src/fxi_novel/knowledge/models_graph.py" = ["F401"]
+"src/fxi_novel/learning/payloads.py" = ["F401"]
+"src/fxi_novel/knowledge/service_writing_methods.py" = ["F401"]
+"src/fxi_novel/knowledge/repository_parse_event_evidence.py" = ["F401"]
+# Tests import pytest fixtures by name and receive them as same-named arguments.
+"tests/*" = ["F401", "F811", "E402"]

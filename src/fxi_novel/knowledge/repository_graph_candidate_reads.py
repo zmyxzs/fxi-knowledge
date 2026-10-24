@@ -1,7 +1,6 @@
 """Knowledge persistence methods for graph candidate reads."""
 
 import logging
-import time
 from pydantic import ValidationError
 
 from .repository_support import *

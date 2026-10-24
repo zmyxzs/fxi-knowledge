@@ -323,7 +323,7 @@ class KnowledgeGraphSourceReviewMixin(KnowledgeGraphSourceReviewUnitMixin):
                     raise ValueError(
                         "target must be a current parse candidate in the selected source and folder"
                     )
-                target_content = KnowledgeGraphCandidateContent.model_validate(target_row["content"])
+                KnowledgeGraphCandidateContent.model_validate(target_row["content"])
                 if str(target_row["version_id"]) != expected_candidate_version_id:
                     raise ValueError("targeted review candidate input version changed")
                 targeted_context = self.knowledge.targeted_graph_review_context(

@@ -791,7 +791,6 @@ def test_event_quantity_links_are_derived_only_from_the_quantity_side() -> None:
 
 
 def test_event_anchor_is_derived_without_reusing_same_named_event_entity() -> None:
-    segment = {"ref": "E1", "text": "林澈再次寻找遗失的宝石。"}
     original = {
         "schema_version": 4,
         "covered_segment_refs": ["E1"],

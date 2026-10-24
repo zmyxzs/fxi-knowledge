@@ -193,7 +193,8 @@ def cross_process_lock(path: str | Path) -> Iterator[None]:
                 raise MaintenanceLockBusyError(
                     f"maintenance lock is already held: {lock_path}"
                 ) from exc
-            unlock = lambda: msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            def unlock() -> None:
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
         else:
             try:
                 import fcntl
@@ -205,7 +206,8 @@ def cross_process_lock(path: str | Path) -> Iterator[None]:
                         f"maintenance lock is already held: {lock_path}"
                     ) from exc
                 raise
-            unlock = lambda: fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            def unlock() -> None:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
         locked = True
         yield
     finally:

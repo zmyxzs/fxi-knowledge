@@ -132,10 +132,11 @@ def _identity_choose_canonical_id(
     prior_ids = [str(state["canonical_id"]) for state in prior_group_states
                  if str(state.get("canonical_id") or "") in members]
     model_ids = [item_id for item_id in members if member_roles.get(item_id) == "canonical"]
-    stable_key = lambda item_id: (
-        normalized_name(candidate_by_id[item_id]["content"]["entity_name"]),
-        str(candidate_by_id[item_id].get("source_id") or ""), item_id,
-    )
+    def stable_key(item_id: str) -> tuple[str, str, str]:
+        return (
+            normalized_name(candidate_by_id[item_id]["content"]["entity_name"]),
+            str(candidate_by_id[item_id].get("source_id") or ""), item_id,
+        )
     if (
         all(position is not None for position in positions.values())
         and None not in manifest_keys

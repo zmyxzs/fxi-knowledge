@@ -436,7 +436,7 @@ class KnowledgeConversationEffectRepositoryMixin:
             )
 
     def _restore_conversation_source(self, connection, plan):
-        current, prior, source_id = plan["current"], plan["restore"], plan["target_id"]
+        prior, source_id = plan["restore"], plan["target_id"]
         record_source_state(connection, source_id)
         if prior is None:
             connection.execute("UPDATE source SET deleted_at=? WHERE id=?", (_now(), source_id))

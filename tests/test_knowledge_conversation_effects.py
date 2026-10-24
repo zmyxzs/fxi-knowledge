@@ -75,7 +75,7 @@ def test_new_items_are_inactive_but_history_and_shared_evidence_survive(owner):
     database, repository, service, work_id, _library, source = owner
     with conversation_write_origin(origin(work_id)):
         tracked = create(repository, work_id, source, "对话产生设定")
-        study = create(repository, work_id, source, "ConversationMethod", kind="source_study")
+        create(repository, work_id, source, "ConversationMethod", kind="source_study")
     independent = create(repository, work_id, source, "独立手工设定")
     result = service.retract_conversation_effects(conversation_id="conversation-1", superseded_message_refs=refs("message-1"), work_id=work_id)
     assert result["status"] == "completed" and result["retracted"] == 2

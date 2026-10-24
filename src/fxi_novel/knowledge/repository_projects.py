@@ -144,7 +144,7 @@ class KnowledgeProjectRepositoryMixin(KnowledgeProjectCountRepositoryMixin):
             if cursor.rowcount == 0:
                 return None
             row = connection.execute(
-                f"""
+                """
                 SELECT id, space, title, description, status, created_at, updated_at
                 FROM knowledge_project WHERE id = ? AND space = ?
                 """,

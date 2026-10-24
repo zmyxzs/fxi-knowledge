@@ -205,10 +205,6 @@ class KnowledgeGraphIdentityResolutionOutput(BaseModel):
             if target_ids.intersection(decision_ids):
                 raise ValueError("identity repartition targets must not overlap")
             target_ids.update(decision_ids)
-            expected_partitions = [
-                {member.entity_item_id for member in group.members}
-                for group in decision.partitions
-            ]
             actual_partition_groups: dict[frozenset[str], KnowledgeGraphIdentityGroupOutput] = {}
             for group, group_members in zip(self.groups, group_member_sets, strict=True):
                 if not group_members.intersection(decision_ids):

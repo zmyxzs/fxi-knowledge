@@ -256,7 +256,6 @@ class KnowledgeParseBatchStageRepositoryMixin:
                    and not completed_batch_correction and not advance
             ):
                 raise ValueError("parse batch is queued, running, or no longer matches the retry request")
-            batch = dict(batch_row)
             current_manifest_pin = self._decode_manifest_history(
                 batch_row["requested_manifest_pin_json"]
             )

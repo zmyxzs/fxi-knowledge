@@ -239,7 +239,6 @@ class KnowledgeSourceCatalogRepositoryMixin:
         normalized_query = " ".join(query.split()).casefold()
         folder_cte = ""
         folder_filter = ""
-        folder_path: str | None = None
         folder_parameters: list[Any] = []
         stable_scope: dict[str, Any] | None = None
         stable_source_ids: list[str] | None = None
@@ -277,8 +276,6 @@ class KnowledgeSourceCatalogRepositoryMixin:
                 )
                 if folder is None:
                     stable_source_ids = []
-                else:
-                    folder_path = str(folder["path"])
             else:
                 with self.database.connection() as connection:
                     self._ensure_project_exists(connection, space, work_id)
@@ -291,7 +288,6 @@ class KnowledgeSourceCatalogRepositoryMixin:
                     ).fetchone()
                 if folder is None:
                     raise ValueError("folder must belong to the selected knowledge scope")
-                folder_path = str(folder["path"])
 
         if direct_folder_only:
             if folder_id is None:

@@ -4,7 +4,6 @@ from .repository_support import *
 from .repository_graph_candidate_review_writes import KnowledgeGraphCandidateReviewWriteRepositoryMixin
 from .repository_parse_publication import (
     preserve_published_graph_version_before_append,
-    published_graph_candidate_filter,
 )
 from .repository_conversation_effects import (
     assert_conversation_write_allowed,
@@ -375,7 +374,6 @@ class KnowledgeGraphCandidateWriteRepositoryMixin(KnowledgeGraphCandidateReviewW
         previous_content: Any,
     ) -> None:
         references = _linked_learning_candidates(content)
-        candidate_publication_filter = published_graph_candidate_filter("i")
         previous_references = {
             (
                 str(item.get("candidate_item_id", "")),

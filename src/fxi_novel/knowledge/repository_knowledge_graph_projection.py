@@ -9,7 +9,7 @@ from .scope_selection import all_version_source_dependencies_filter
 
 
 _IDENTITY_REVIEW_NULL_SORT_KEY = 9223372036854775807
-from .repository_knowledge_card_index import KnowledgeCardIndexRepositoryMixin
+from .repository_knowledge_card_index import KnowledgeCardIndexRepositoryMixin  # noqa: E402 - late import avoids an import cycle
 
 
 class KnowledgeGraphProjectionRepositoryMixin:

@@ -52,7 +52,9 @@ def test_rejected_speaker_entity_retains_valid_facts_and_repairs_exact_dialogue(
         ("entities", 1), ("dialogue_annotations", 0),
     }
     entity = {k: v for k, v in raw["entities"][1].items() if k != "asserted_by"}
-    entity.pop("source_segment_ref"); entity.pop("evidence_quote"); entity["evidence_ref"] = "X1"
+    entity.pop("source_segment_ref")
+    entity.pop("evidence_quote")
+    entity["evidence_ref"] = "X1"
     patch = {"schema_version": 1, "replacements": [
         {"collection": "entities", "index": 1, "row": entity},
         {"collection": "dialogue_annotations", "index": 0, "row": raw["dialogue_annotations"][0]},

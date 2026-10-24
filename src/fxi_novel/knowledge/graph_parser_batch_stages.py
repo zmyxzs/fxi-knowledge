@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 from .graph_parser_batch_stage_contracts import (
@@ -31,14 +30,13 @@ from .graph_parser_support import logger
 from .graph_parser_stage_serialization import parse_batch_stage_scope
 from .models import (
     KNOWLEDGE_GRAPH_SEMANTIC_REVIEW_VERSION,
-    KNOWLEDGE_PARSE_DOWNSTREAM_STAGES,
 )
 from .repository_support import ProseLifecycleEventSupersededError
 from .parse_completion import execution_goal, required_stages
 
 
 _RESOLUTION_PHASES = ("identity_resolution", "event_resolution")
-from .graph_parser_batch_audit_failure import (
+from .graph_parser_batch_audit_failure import (  # noqa: E402 - late import avoids an import cycle
     _stage_attempt_snapshot, _failure_impact_from_attempts, _TERMINAL_AUDIT_FAILURES,
 )
 
