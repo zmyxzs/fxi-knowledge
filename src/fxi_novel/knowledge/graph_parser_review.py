@@ -44,6 +44,7 @@ from .graph_parser_review_units import (
     review_entity_refs, requires_dependency_check,
 )
 from .graph_parser_review_repair import (
+    normalize_raw_semantic_review_payload,
     normalize_semantic_review_rows,
     run_semantic_review_with_local_repair,
     semantic_review_repair_diagnostics,
@@ -659,9 +660,15 @@ class KnowledgeGraphSourceReviewMixin(KnowledgeGraphSourceReviewUnitMixin):
                     validation_errors.clear()
                     review_row_isolation.clear()
                     try:
+                        raw_output = _load_model_json(result.text)
+                        normalize_raw_semantic_review_payload(
+                            raw_output,
+                            candidate_by_ref=candidate_by_ref,
+                            segment_refs=segment_refs,
+                        )
                         output = KnowledgeGraphSemanticReviewOutput.model_validate(
                             align_semantic_review_output(
-                                _load_model_json(result.text), candidate_refs=validation_scope["candidate_refs"],
+                                raw_output, candidate_refs=validation_scope["candidate_refs"],
                                 known_refs=validation_scope["known_refs"],
                                 dialogue_record_ids=[row["record_id"] for row in (
                                     dialogue_review_targets if validation_scope["check_excluded_dependencies"]

@@ -164,3 +164,36 @@ parser = KnowledgeGraphParseService(
 两边输出的 JSON **逐字节相同**（`items_total=155`，命中/分数/卡片一致）。
 
 结论：本轮改动（打包、测试、lint、文档）没有改变知识库的运行时行为；抽取快照与当前 HEAD 在知识读取路径上等价。
+
+## 8. 2026-10-25 DeepSeek 10 章复跑与系统修复
+
+### 诊断：失败与模型差异无关
+
+查 `knowledge_parse_stage_attempt` 后确认，DeepSeek 的失败不是输出预算问题（失败请求的 `completion_tokens` 只有 238–3340，远低于 16000），而是系统侧的三类问题：
+
+1. **评审按来源整章打包**：单请求 30–58 KB，一次要求模型回几十行；漏行（C36/C41）、证据顺序错误、correction 附带非法字段都会让整组失败。
+2. **身份整理请求过大**：单请求约 58 KB、最多 120 个候选，端点直接断连（`ReadError` / `response_not_received`）。
+3. **校验与模型习惯冲突**：契约要求 `uncertain/conflicted/excluded` 不得携带 correction，但模型反复附带；repair 重试后仍失败，来源被整体标记失败。
+
+### 修复
+
+1. 评审前本地归一化（`normalize_raw_semantic_review_payload`）：
+   - 非支持性结论（uncertain/conflicted/excluded）丢弃 correction；
+   - correction 字段按角色白名单裁剪（实体只保留分类/粒度/描述等）；
+   - 证据引用按来源 segment 顺序排序。
+2. 身份分块从 120 候选降到 **48**，避免超大请求。
+3. 对话引用校验与发布端对齐（见 `b1e63c5`）。
+
+### 结果（10 章、DeepSeek、空库）
+
+- 108 次调用、942 秒
+- `check` 8/10 completed、`resolution` 8/10、`publish` 8/10
+- **666 / 679 条知识已发布（98%）**
+- 身份：197 个候选 → 122 个组，合并 75 个
+- 对话集：8 published / 2 candidate
+
+对比修复前同规模运行（`check` 1/10、`publish` 0/10），完成率从 10% 提升到 80%。
+
+### 仍待解决
+
+2 个来源的评审仍停在「有效审校行已保存；剩余候选或对白仍待审校」。下一步应把**评审目标按候选数分窗**（当前仍按来源整章），让单次响应规模可控；这属于结构性改动，不影响已发布数据。

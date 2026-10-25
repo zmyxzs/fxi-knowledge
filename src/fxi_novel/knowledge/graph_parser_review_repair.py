@@ -9,7 +9,7 @@ import json
 import re
 from dataclasses import dataclass
 from hashlib import sha256
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
 from pydantic import ValidationError
@@ -214,6 +214,49 @@ def normalize_semantic_review_rows(decisions, candidate_by_ref, *, isolation_aud
     if failures:
         raise SemanticReviewRowsInvalid(failures)
     return normalized
+
+
+def normalize_raw_semantic_review_payload(
+    payload: Any,
+    *,
+    candidate_by_ref: Mapping[str, Mapping[str, Any]],
+    segment_refs: Sequence[str],
+) -> Any:
+    """Strip model-side noise that the review contract never authorizes.
+
+    Models routinely attach a correction while marking a row uncertain or
+    excluded, or fill correction fields outside the role's allowlist. Those
+    values carry no authority, so dropping them locally is safer than spending
+    a repair round on a row whose verdict is already "not supported". Evidence
+    references are ordered by the source segment order the validator requires.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    rows = payload.get("reviews")
+    if not isinstance(rows, list):
+        return payload
+    order = {str(ref): index for index, ref in enumerate(segment_refs)}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if row.get("assessment") in {"uncertain", "conflicted", "excluded"}:
+            row["correction"] = None
+        correction = row.get("correction")
+        if isinstance(correction, dict):
+            candidate = candidate_by_ref.get(str(row.get("candidate_ref")), {})
+            role = candidate.get("candidate_role") if isinstance(candidate, Mapping) else None
+            allowed = (
+                SEMANTIC_ENTITY_CORRECTION_FIELDS if role == "entity"
+                else SEMANTIC_FACT_CORRECTION_FIELDS
+            )
+            filtered = {key: value for key, value in correction.items() if key in allowed}
+            row["correction"] = filtered or None
+        cited = row.get("evidence_segment_refs")
+        if isinstance(cited, list) and all(isinstance(ref, str) for ref in cited):
+            row["evidence_segment_refs"] = sorted(
+                cited, key=lambda ref: order.get(ref, len(order)),
+            )
+    return payload
 
 
 def _decision_row_issues(
