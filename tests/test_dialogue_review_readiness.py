@@ -23,6 +23,7 @@ def _review(status="unresolved", cited=None):
     target = {
         "record_id": record_id, "quote_segment_refs": ["E1"],
         "speaker_evidence": [{"source_segment_refs": ["E2"]}],
+        "source_segment_refs": ["E1", "E2"],
     }
     return record, decision, target
 
@@ -63,4 +64,14 @@ def test_attribution_fallback_does_not_relax_quote_scope(cited, message):
         validate_dialogue_review_output(
             decisions=[decision], targets=[target],
             records_by_id={record["record_id"]: record}, segment_refs=["E1", "E2"],
+        )
+
+
+def test_citation_outside_the_record_target_is_rejected_before_publication():
+    record, decision, target = _review(cited=["E4"])
+    with pytest.raises(ValueError, match="escapes the exact utterance segments"):
+        validate_dialogue_review_output(
+            decisions=[decision], targets=[target],
+            records_by_id={record["record_id"]: record},
+            segment_refs=["E1", "E2", "E3", "E4"],
         )

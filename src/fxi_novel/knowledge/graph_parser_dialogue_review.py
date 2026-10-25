@@ -215,6 +215,14 @@ def validate_dialogue_review_output(
         if decision.evidence_segment_refs != [ref for ref in segment_refs if ref in cited]:
             raise ValueError("dialogue review evidence references must follow source order")
         target = target_by_id[decision.record_id]
+        # Publication re-checks this against the per-record target; keep the
+        # review-side validator at least as strict so an out-of-target citation
+        # is repaired here instead of failing the publish component later.
+        allowed_target_segments = {
+            str(reference) for reference in target.get("source_segment_refs", ())
+        }
+        if allowed_target_segments and not cited <= allowed_target_segments:
+            raise ValueError("dialogue review evidence escapes the exact utterance segments")
         if not cited.intersection(str(ref) for ref in target["quote_segment_refs"]):
             raise ValueError("dialogue semantic review must cite the exact utterance context")
         speaker_refs = {
