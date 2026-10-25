@@ -152,3 +152,15 @@ parser = KnowledgeGraphParseService(
 3. 接上 `examples/writing_order_reader.py` 的 `SourceOrderManifest`（或实现等价的 `get_order_in_connection`，返回 verified manifest）。
 4. `enqueue_parse_batch(space="writing", branch_id="main", ...)` 后 `await run_parse_batch(batch_id)`。
 5. 查询：`query_story_knowledge` / `search_planned` / `KnowledgeQueryPlanner` + `KnowledgeQueryAssessmentService`。
+
+## 7. 行为等价性检查（2026-10-25）
+
+用 `git archive cec8887` 取出抽取时的快照，和当前 HEAD 各跑同一份 `data/verify.sqlite3` 副本，比较：
+
+- 两条 `search_planned`（其中一条带 `entity_mentions=["杨凌"]`）的命中顺序、原文、分数、`retrieval_mode`、`knowledge_cards`
+- `query_story_knowledge` 的 `total_count`
+- `list_knowledge_items` 的 `total`
+
+两边输出的 JSON **逐字节相同**（`items_total=155`，命中/分数/卡片一致）。
+
+结论：本轮改动（打包、测试、lint、文档）没有改变知识库的运行时行为；抽取快照与当前 HEAD 在知识读取路径上等价。
