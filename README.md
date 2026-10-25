@@ -49,13 +49,14 @@
 - 在这里改好的模块，可以整体拷回原项目而不必再改 import；
 - 代价是两边不能装进同一个 venv（装进同一个会互相覆盖）。
 
-## 相对原项目的五处适配
+## 相对原项目的六处适配
 
 1. `src/fxi_novel/writing/__init__.py` 被改写成最小版本——原文件会导入 `chapter_check`，那个模块属于写作系统，没有抽过来。
 2. 删除了 39 个测试文件：34 个通过辅助模块间接依赖 `fxi_novel.api` / `fxi_novel.assistant` / `scripts`；另外 5 个是 HTTP 或验收脚本（`test_source_edit_revision`、`test_source_record_history`、`test_source_save_receipts`、`test_d1_query_baseline_run`、`test_style_validation_batches`），按 `scripts/`、`data/validation/` 的绝对路径读文件，属于工具链而不是知识库单元测试。
 3. `prompts/` 与 `config/writing_chains/` 整体复制，因为 `learning` 的服务会按路径读取提示词，`chain_versions.selected_prompt` 也会读链配置。
 4. 删除了 6 个不再被引用的测试辅助文件（`assistant_turn_api_support`、`chapter_planning_archived_fixture`、`generated_quality_review_fixture`、`knowledge_graph_parse_support`、`parse_queue_support`、`sentence_structure_revision_support`）：它们 import 了未抽取的 `api` / `assistant` / `writing` 模块，而现有测试文件对它们零引用。
-5. 新增 `src/fxi_novel/project_paths.py`，并让 `chain_versions.py` / `prompt_loading.py` 用它定位 `prompts/` 与 `config/`；`pyproject.toml` 用 `force-include` 把这两个目录作为包数据打进 wheel（`fxi_novel/_data/`）。这是为「非 editable 安装也能用」做的唯一结构性改动，回迁主项目时注意它和原项目的路径假设不同。
+5. 新增 `src/fxi_novel/project_paths.py`，并让 `chain_versions.py` / `prompt_loading.py` 用它定位 `prompts/` 与 `config/`；`pyproject.toml` 用 `force-include` 把这两个目录作为包数据打进 wheel（`fxi_novel/_data/`）。这是为「非 editable 安装也能用」做的结构性改动，回迁主项目时注意它和原项目的路径假设不同。
+6. 迁移链压成一份 baseline（`storage/schema_baseline.sql` + `migrations_baseline.py`，version 105），删除 42 个历史迁移模块，旧库不再支持。回迁到仍用迁移链的 `Fxi-novel` 时，**不要直接覆盖 `storage/`**。
 
 ## 怎么跑
 
