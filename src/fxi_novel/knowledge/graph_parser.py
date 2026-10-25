@@ -37,9 +37,14 @@ class KnowledgeGraphParseService(
         semantic_review_prompt_path: Path,
         event_reconciliation: Any | None = None,
         stage_audit_runner: Any | None = None,
+        review_gateway: ModelGateway | None = None,
     ) -> None:
         self.knowledge = knowledge
         self.model_gateway = model_gateway
+        # Extraction keeps the parser gateway; semantic review and identity
+        # resolution can use a structurally stricter model without changing
+        # the extraction model. Defaults to one gateway for every stage.
+        self.review_gateway = review_gateway or model_gateway
         self.global_parse_semaphore: asyncio.Semaphore | None = None
         self._identity_reconciliation_locks: dict[
             tuple[str, str | None, str | None], asyncio.Lock
@@ -72,8 +77,14 @@ class KnowledgeGraphParseService(
     @property
     def route_fingerprint(self) -> str:
         """Fingerprint the active chat route chain so route changes invalidate old receipts."""
-        config = self.model_gateway.config
-        routes = (config.chat, *config.chat_fallbacks)
+        routes = [
+            *(self.model_gateway.config.chat, *self.model_gateway.config.chat_fallbacks),
+        ]
+        if self.review_gateway is not self.model_gateway:
+            routes.extend((
+                self.review_gateway.config.chat,
+                *self.review_gateway.config.chat_fallbacks,
+            ))
         route_material = [
             {
                 "enabled": route.enabled,

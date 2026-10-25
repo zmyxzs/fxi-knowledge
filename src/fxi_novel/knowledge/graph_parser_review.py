@@ -336,7 +336,7 @@ class KnowledgeGraphSourceReviewMixin(KnowledgeGraphSourceReviewUnitMixin):
                     parse_stage_audit_context = targeted_context
                     if self.stage_audit_runner is None:
                         from .parse_stage_audit import KnowledgeParseStageAuditRunner
-                        self.stage_audit_runner = KnowledgeParseStageAuditRunner(self.knowledge, self.model_gateway)
+                        self.stage_audit_runner = KnowledgeParseStageAuditRunner(self.knowledge, self.review_gateway)
                 dialogue_rows = []
             if not source_rows and not dialogue_rows:
                 source_results.append({
