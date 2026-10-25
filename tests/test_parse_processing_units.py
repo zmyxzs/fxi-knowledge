@@ -20,42 +20,26 @@ from fxi_novel.knowledge.repository_parse_processing_units import (
 from fxi_novel.knowledge.repository_parse_stage_audit import (
     KnowledgeParseStageAuditRepositoryMixin,
 )
-from fxi_novel.storage.migrations import apply_migration
-from fxi_novel.storage.migrations_parse_processing_units import MIGRATIONS_PARSE_PROCESSING_UNITS
+from fxi_novel.storage.migrations_baseline import BASELINE_SCHEMA_SQL
 
 
 def _seed_processing_unit_connection():
     connection = sqlite3.connect(":memory:")
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
-    connection.executescript("""
-        CREATE TABLE knowledge_parse_batch (
-            id TEXT PRIMARY KEY,
-            status TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE TABLE knowledge_parse_batch_item (
-            batch_id TEXT NOT NULL,
-            ordinal INTEGER NOT NULL,
-            source_id TEXT NOT NULL,
-            source_title TEXT NOT NULL,
-            folder_id TEXT,
-            snapshot_id TEXT NOT NULL,
-            status TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (batch_id, ordinal)
-        );
-    """)
-    apply_migration(connection, MIGRATIONS_PARSE_PROCESSING_UNITS[0])
+    connection.executescript(BASELINE_SCHEMA_SQL)
+    connection.execute("PRAGMA user_version = 105")
     connection.execute(
-        "INSERT INTO knowledge_parse_batch(id, status, updated_at) VALUES ('batch', 'running', 't')"
+        """INSERT INTO knowledge_parse_batch(
+               id, space, max_concurrency, force_reparse, status, total_sources,
+               created_at, updated_at
+           ) VALUES ('batch', 'learning', 1, 0, 'running', 1, 't', 't')"""
     )
     connection.execute(
         """INSERT INTO knowledge_parse_batch_item(
-               batch_id, ordinal, source_id, source_title, folder_id, snapshot_id,
+               batch_id, ordinal, source_id, source_title, snapshot_id,
                status, created_at, updated_at
-           ) VALUES ('batch', 0, 'source', 'Chapter', NULL, 'snapshot', 'completed', 't', 't')"""
+           ) VALUES ('batch', 0, 'source', 'Chapter', 'snapshot', 'completed', 't', 't')"""
     )
     connection.execute(
         """INSERT INTO knowledge_parse_processing_unit(

@@ -152,6 +152,11 @@ class Database:
                     f"database schema version {current_version} is newer than "
                     f"supported version {latest_version}"
                 )
+            if 0 < current_version < latest_version:
+                raise RuntimeError(
+                    f"database schema version {current_version} predates the baseline "
+                    f"schema ({latest_version}); old databases are not supported"
+                )
 
             try:
                 for migration in MIGRATIONS:

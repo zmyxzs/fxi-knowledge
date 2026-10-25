@@ -20,7 +20,7 @@ def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def _fixture(content: str = "魂环的颜色按年限决定。", *, schema_version: int | None = None):
+def _fixture(content: str = "魂环的颜色按年限决定。"):
     database = Database(":memory:")
     database.initialize()
     repository = KnowledgeRepository(database, embedding_indexing_enabled=False)
@@ -65,67 +65,6 @@ def _fixture(content: str = "魂环的颜色按年限决定。", *, schema_versi
         )],
         evidence_scopes=[pin],
     )
-    if schema_version is not None:
-        # Current owners require the current source schema. Prepare their data
-        # above, then place compatible columns into a genuinely old database.
-        # The migration/recovery test must never run with a forged user_version.
-        from fxi_novel.storage.migrations import MIGRATIONS, apply_migration
-
-        legacy = Database(":memory:")
-        try:
-            with legacy.connection() as connection:
-                for migration in sorted(MIGRATIONS, key=lambda item: item.version):
-                    if migration.version <= schema_version:
-                        apply_migration(connection, migration)
-                triggers = connection.execute(
-                    "SELECT name, sql FROM sqlite_master WHERE type = 'trigger'",
-                ).fetchall()
-                tables = [
-                    row["name"] for row in connection.execute("PRAGMA table_list")
-                    if row["type"] in {"table", "virtual"}
-                    and not row["name"].startswith("sqlite_")
-                ]
-
-                def quoted(name):
-                    return '"' + name.replace('"', '""') + '"'
-
-                connection.execute("PRAGMA foreign_keys = OFF")
-                connection.execute("BEGIN")
-                try:
-                    for trigger in triggers:
-                        connection.execute("DROP TRIGGER " + quoted(trigger["name"]))
-                    with database.connection() as prepared:
-                        for table in tables:
-                            table_sql = quoted(table)
-                            prepared_columns = {
-                                row["name"] for row in prepared.execute(f"PRAGMA table_info({table_sql})")
-                            }
-                            columns = [
-                                row["name"] for row in connection.execute(f"PRAGMA table_info({table_sql})")
-                                if row["name"] in prepared_columns
-                            ]
-                            names = ", ".join(quoted(column) for column in columns)
-                            connection.execute(f"DELETE FROM {table_sql}")
-                            connection.executemany(
-                                f"INSERT INTO {table_sql} ({names}) VALUES ({', '.join('?' for _ in columns)})",
-                                [tuple(row) for row in prepared.execute(f"SELECT {names} FROM {table_sql}")],
-                            )
-                    for trigger in triggers:
-                        connection.execute(trigger["sql"])
-                    assert not connection.execute("PRAGMA foreign_key_check").fetchall()
-                    connection.commit()
-                except BaseException:
-                    connection.rollback()
-                    raise
-                finally:
-                    connection.execute("PRAGMA foreign_keys = ON")
-        except BaseException:
-            legacy.close()
-            database.close()
-            raise
-        database.close()
-        database = legacy
-        repository = KnowledgeRepository(database, embedding_indexing_enabled=False)
     return database, repository, imported, logical_work_id, pin, spec
 
 
@@ -367,47 +306,6 @@ def test_query_review_rejects_an_exactly_shaped_but_wrong_current_source_span():
                 "SELECT COUNT(*) FROM knowledge_query_reviewed_claim_publication",
             ).fetchone()[0]
         assert count == 0
-    finally:
-        database.close()
-
-
-def test_schema_91_trigger_upgrade_recovers_the_saved_exact_handoff(caplog):
-    from fxi_novel.storage.migrations_query_reviewed_publication import QUERY_CLAIM_PUBLICATION_SCOPE_TRIGGER_SQL
-    from fxi_novel.storage.migrations import MIGRATIONS
-
-    database, repository, imported, _, pin, spec = _fixture(schema_version=91)
-    try:
-        with database.connection() as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == 91
-            assert "edit_revision" not in {
-                row["name"] for row in connection.execute("PRAGMA table_info(source)")
-            }
-            assert connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE name = 'source_record_history'",
-            ).fetchone() is None
-        broken = QUERY_CLAIM_PUBLICATION_SCOPE_TRIGGER_SQL.replace(
-            "json(NEW.claim_json)", "json(NEW.claim_json, '$.query_learning_claim')", 1,
-        )
-        with database.transaction() as connection:
-            connection.execute("DROP TRIGGER knowledge_query_claim_publication_scope_insert")
-            connection.execute(broken)
-            connection.execute("PRAGMA user_version = 91")
-        failed = repository.publish_query_reviewed_claims(
-            spec, [_claim(imported, "魂环的颜色按年限决定。")], _receipt(pin),
-        )
-        assert failed["failure_code"] == "projection_failed"
-        proof = repository.get_query_review_receipt(failed["receipt_id"])["proof"]
-        assert "wrong number of arguments to function json()" in caplog.text
-
-        database.initialize()
-        with database.connection() as connection:
-            assert connection.execute("PRAGMA user_version").fetchone()[0] == max(item.version for item in MIGRATIONS)
-        recovered = repository.recover_query_reviewed_claims(failed["receipt_id"])
-        assert recovered["status"] == "published"
-        assert recovered["available_count"] == 1
-        assert recovered["receipt_id"] == failed["receipt_id"]
-        assert repository.get_query_review_receipt(failed["receipt_id"])["proof"] == proof
-        assert repository.get_knowledge_item(recovered["published"][0]["candidate_item_id"], published_only=True)
     finally:
         database.close()
 

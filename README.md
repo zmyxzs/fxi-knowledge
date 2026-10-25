@@ -11,7 +11,7 @@
 | 目录 | 内容 |
 |---|---|
 | `src/fxi_novel/knowledge/` | 知识库主体：来源、解析、检索、方法、状态、资产、登记册、查询 |
-| `src/fxi_novel/storage/` | SQLite 访问、迁移、运行与对话存储 |
+| `src/fxi_novel/storage/` | SQLite 访问、baseline schema、运行与对话存储 |
 | `src/fxi_novel/models/` | 数据模型与模型网关（`ChatModel` / `ModelGateway`） |
 | `src/fxi_novel/learning/` | 学习链路（研究与知识库共用 owner） |
 | `src/fxi_novel/writing/` | 只保留 3 个被知识库反向引用的模块：`source_scope`、`chapter_author_sources`、`chain_versions` |
@@ -20,9 +20,9 @@
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
-| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash 方案 |
+| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash 记录 |
 | `scripts/` | 仓库本地工具（`dump_baseline_schema.py` 生成 baseline schema 草稿） |
-| `tests/` | 只依赖上述包的 185 个测试文件（1801 个用例） |
+| `tests/` | 只依赖上述包的 180 个测试文件（1787 个用例） |
 
 **没有** `assistant/`、`api/`、`workflows/`、`ui/`：这些属于写作系统，不在知识库范围内。
 
@@ -31,7 +31,7 @@
 在 `D:\Projects\Fxi-novel\.venv` 解释器下（`PYTHONPATH` 指向本项目 `src`）：
 
 ```
-1794 passed, 7 skipped in 731s
+1780 passed, 7 skipped in 416s
 ```
 
 抽取时登记的 22 项既有失败（原基线 `22 failed, 1766 passed, 7 skipped in 719s`）已全部处理完：
@@ -80,6 +80,13 @@ python -m pip install .
 
 wheel 把 `prompts/` 和 `config/writing_chains/` 作为包数据放在 `fxi_novel/_data/`，运行时由 `project_paths.project_root()` 定位，不需要把仓库目录一起带上。
 
+schema 只有一份 baseline（`src/fxi_novel/storage/schema_baseline.sql`）。改表结构后重新生成并提升版本号：
+
+```powershell
+python scripts\dump_baseline_schema.py
+# 然后把 migrations_baseline.BASELINE_VERSION 改成新的版本
+```
+
 依赖只有 `pydantic`、`numpy`、`jsonschema`、`jieba`、`httpx`；写作系统那套 FastAPI/LangGraph 都不需要。
 
 如果暂时不想建 venv，也可以用原项目的解释器加 `PYTHONPATH` 验证（`PYTHONPATH` 优先于原项目的 editable 安装）：
@@ -94,7 +101,7 @@ D:\Projects\Fxi-novel\.venv\Scripts\python.exe -m pytest -q
 `.github/workflows/tests.yml` 在 push / PR 时执行：
 
 - `ruff check .`：全量 lint（星号 import 与 re-export hub 已在 `pyproject.toml` 里按文件豁免）
-- `pytest -q`：全量 1801 个用例
+- `pytest -q`：全量 1787 个用例
 
 ## 程序 API
 
@@ -218,7 +225,7 @@ learning = LearningService(knowledge, gateway, project_root() / "prompts" / "lea
 
 ## 已知限制
 
-1. **不支持旧库升级**：只支持从空库初始化；v81/v82 等旧库升级用例已删除（当前 `add_text_source` 依赖 v97 才加的 `source.edit_revision`）。
+1. **不支持旧库升级**：只支持从空库初始化。schema 由单个 baseline（`src/fxi_novel/storage/schema_baseline.sql`）建立；`Database.initialize()` 遇到低于 baseline 的 `user_version` 会直接抛 `RuntimeError`，不会尝试迁移。
 2. **7 个 skip**：需要 `data/` 下的审计库或验证快照，这些数据没有抽进来；skip 消息里写了缺什么。
 3. **写作空间解析需要外部 narrative-order reader**：独立 checkout 没有 writer-owned manifest，`writing` 空间的 parse 会抛 `writing narrative-order reader is not configured`；需要自己实现并 `set_writing_narrative_order_reader`（`examples/writing_order_reader.py` 提供了一个按导入顺序编号的最小实现，可作起点）。
 4. **事件整理阶段强制 DeepSeek**：`event_reconciliation_review_execution` 校验 `provider_model` 必须含 `deepseek`；用其它模型时 resolution 阶段会失败。
