@@ -197,6 +197,6 @@ parser = KnowledgeGraphParseService(
 
 `resolution` 曾对 9 个来源统一报 `event resolution attempt has an invalid validated response`。根因是事件整理校验把**失败的 attempt**（`status=failed`、无 `validated_response`）也当成 proof 遍历；一个瞬时失败就让整个 folder 的 resolution 归零。修复：校验只读取 `validated` 且带 `validated_response` 的 attempt（`repository_parse_event_attempt_validation.py`）。
 
-### 仍待解决（非阻断）
+### 问答层的兜底
 
-问答层的 requirement 执行预算：10 章问答仍会出现 `not_executed`（3 条 requirement 只执行 1 条）。这是 query planner/executor 的操作预算问题，不影响知识入库、检索与关联。
+10 章问答偶尔出现 `not_executed`：模型给出的 requirement 没有对应的 operation，执行器按契约只能标为未执行。修复：`_ensure_requirement_operations` 在计划生成后为每个缺少操作的 requirement 补一条 `semantic` 检索（优先用它的 `search_queries`，否则用描述）。同一问题连续 3 次复跑均为 2 条 requirement、全部 `supported`。

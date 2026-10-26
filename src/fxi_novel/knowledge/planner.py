@@ -164,8 +164,51 @@ class KnowledgeQueryPlanner:
             allowed_entity_mentions=allowed_entities,
             scope_context=scope_context,
         )
+        _ensure_requirement_operations(result)
         save_plan_reuse(self, reuse, result)
         return result
+
+
+def _ensure_requirement_operations(result: dict[str, Any]) -> None:
+    """Give every requirement an executable operation when the model omitted one.
+
+    A requirement without operations is reported as `not_executed` by the
+    executor even when its search queries are valid, so fall back to one
+    semantic search per uncovered requirement instead of losing the question.
+    """
+    spec = result.get("query_spec") if isinstance(result, dict) else None
+    if not isinstance(spec, dict):
+        return
+    requirements = spec.get("requirements")
+    operations = spec.get("operations")
+    if not isinstance(requirements, list):
+        return
+    if not isinstance(operations, list):
+        operations = []
+    covered = {
+        str(operation.get("requirement_id"))
+        for operation in operations
+        if isinstance(operation, dict)
+    }
+    for requirement in requirements:
+        if not isinstance(requirement, dict):
+            continue
+        requirement_id = str(requirement.get("id") or "")
+        if not requirement_id or requirement_id in covered:
+            continue
+        queries = requirement.get("search_queries")
+        search_query = str(queries[0]) if isinstance(queries, list) and queries else ""
+        search_query = search_query or str(requirement.get("description") or "")
+        if not search_query:
+            continue
+        operations.append({
+            "id": f"op-{requirement_id}",
+            "requirement_id": requirement_id,
+            "kind": "semantic",
+            "search_query": search_query[:1000],
+        })
+        covered.add(requirement_id)
+    spec["operations"] = operations
 
 
 def _direct_plan(query: str) -> QueryPlanDraft:
