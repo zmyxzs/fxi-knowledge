@@ -916,6 +916,83 @@ class KnowledgeGraphParseBatchStagesMixin:
                 raise
             except Exception as exc:
                 superseded = isinstance(exc, ProseLifecycleEventSupersededError)
+                recovered = False
+                if not superseded:
+                    # A dependency-closed component can fail because one member
+                    # references an entity that semantic review excluded. Retry
+                    # members individually so healthy sources still publish;
+                    # the failing member keeps the component-level diagnostic.
+                    logger.warning(
+                        "knowledge parse batch %s component publish failed; retrying members individually: %s",
+                        batch["batch_id"], str(exc)[:300],
+                    )
+                    for member in members:
+                        if not self._parse_batch_is_running(str(batch["batch_id"])):
+                            return
+                        item = next(
+                            (row for row in component
+                             if int(row["ordinal"]) == int(member["ordinal"])),
+                            None,
+                        )
+                        if item is None:
+                            continue
+                        try:
+                            publication = await asyncio.to_thread(
+                                self.knowledge.publish_knowledge_parse_batch_component,
+                                batch_id=str(batch["batch_id"]),
+                                members=[member],
+                            )
+                            returned_sources = (
+                                publication.get("sources") if isinstance(publication, dict) else None
+                            )
+                            if not isinstance(returned_sources, list) or len(returned_sources) != 1:
+                                raise ValueError("atomic publisher returned an incomplete member receipt")
+                            returned = returned_sources[0]
+                            item_publication = returned.get("publication")
+                            if not isinstance(item_publication, dict):
+                                raise ValueError("atomic publisher omitted a member publication receipt")
+                            item["stage_revision"] += 1
+                            item["stages"]["publish"].update(status="completed", result={
+                                **item_publication,
+                                "component_ordinals": [int(item["ordinal"])],
+                                "source_dependencies": {
+                                    str(item["source_id"]): dependencies_by_source.get(
+                                        str(item["source_id"]), [],
+                                    ),
+                                },
+                                "narrative_order_status": narrative_order_by_source.get(
+                                    str(item["source_id"]), "unavailable",
+                                ),
+                            })
+                            recovered = True
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as member_exc:
+                            logger.info(
+                                "knowledge parse batch %s member %s publish failed: %s",
+                                batch["batch_id"], member["ordinal"], str(member_exc)[:300],
+                            )
+                            try:
+                                self._record_parse_stage(
+                                    batch, item, "publish", "failed",
+                                    error="publish_component_failed",
+                                    diagnostic=(
+                                        "dependency component publish 阶段未完成："
+                                        f"{str(member_exc)[:600]}"
+                                    ),
+                                )
+                            except ValueError:
+                                pass
+                if recovered:
+                    completed_items = [
+                        row for row in component
+                        if row["stages"]["publish"]["status"] == "completed"
+                    ]
+                    if completed_items:
+                        await enqueue_published_component_embeddings(
+                            self.knowledge, batch, completed_items,
+                        )
+                    continue
                 if superseded:
                     logger.info("knowledge parse batch %s publication was superseded", batch["batch_id"])
                 else:
