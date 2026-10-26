@@ -14,6 +14,16 @@ MAX_DIALOGUE_TARGETS = 16
 MAX_REVIEW_SOURCE_SPAN = 4096
 
 
+def _review_result_needs_retry(result: dict[str, Any]) -> bool:
+    """Retry once when a unit saved valid rows but left candidates pending."""
+    return any(
+        isinstance(row, dict)
+        and row.get("status") == "failed"
+        and row.get("partial_review")
+        for row in result.get("sources", [])
+    )
+
+
 def review_entity_refs(content):
     references = {str(content.get(field)) for field in (
         "entity_ref", "target_entity_ref", "asserted_by_entity_ref", "observed_by_entity_ref", "holder_entity_ref",
@@ -485,32 +495,35 @@ class KnowledgeGraphSourceReviewUnitMixin:
                 if result is None and checkpoint is not None:
                     result = checkpoint["review"]
                 elif result is None:
-                    try:
-                        result = await self._review_sources_unit(
-                            **{**request, "source_ids": [source_id],
-                               "expected_snapshot_ids": {source_id: source["snapshot_id"]}},
-                            _selection=selection,
-                        )
-                        result["review_contract"] = contract
-                    except ProseLifecycleEventSupersededError:
-                        raise
-                    except Exception as exc:
-                        result = {
-                            "failed_sources": 1,
-                            "reviewed_candidates": 0,
-                            "corrected_candidates": 0,
-                            "excluded_candidates": 0,
-                            "conflicted_candidates": 0,
-                            "uncertain_candidates": 0,
-                            "reused_candidates": 0,
-                            "protected_candidates": 0,
-                            "sources": [{
-                                "title": source["title"], "status": "failed",
-                                "diagnostic": f"语义审校单元失败（{type(exc).__name__}）：{str(exc)[:400]}",
-                                "review_unit_id": selection["unit_id"],
-                                "candidate_versions": {}, "candidate_version_ids": {},
-                            }],
-                        }
+                    for attempt in range(2):
+                        try:
+                            result = await self._review_sources_unit(
+                                **{**request, "source_ids": [source_id],
+                                   "expected_snapshot_ids": {source_id: source["snapshot_id"]}},
+                                _selection=selection,
+                            )
+                            result["review_contract"] = contract
+                        except ProseLifecycleEventSupersededError:
+                            raise
+                        except Exception as exc:
+                            result = {
+                                "failed_sources": 1,
+                                "reviewed_candidates": 0,
+                                "corrected_candidates": 0,
+                                "excluded_candidates": 0,
+                                "conflicted_candidates": 0,
+                                "uncertain_candidates": 0,
+                                "reused_candidates": 0,
+                                "protected_candidates": 0,
+                                "sources": [{
+                                    "title": source["title"], "status": "failed",
+                                    "diagnostic": f"语义审校单元失败（{type(exc).__name__}）：{str(exc)[:400]}",
+                                    "review_unit_id": selection["unit_id"],
+                                    "candidate_versions": {}, "candidate_version_ids": {},
+                                }],
+                            }
+                        if attempt == 1 or not _review_result_needs_retry(result):
+                            break
                 unit_rows = result.get("sources", [])
                 if not unit_rows and not result.get("failed_sources"):
                     result = {

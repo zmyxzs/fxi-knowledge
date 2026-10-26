@@ -197,3 +197,5 @@ parser = KnowledgeGraphParseService(
 ### 仍待解决
 
 2 个来源的评审仍停在「有效审校行已保存；剩余候选或对白仍待审校」。下一步应把**评审目标按候选数分窗**（当前仍按来源整章），让单次响应规模可控；这属于结构性改动，不影响已发布数据。
+
+补充（同日复跑）：给评审单元加了一次「部分审校后重试」后，`check` 仍是 8/10，说明剩余失败不是瞬时抖动。复跑还暴露了更主要的发布侧问题：**发布依赖门是全组件原子**——只要某个 canonical 实体被语义复核排除，或对白说话者没有解析出身份组，引用它的整个组件都会失败（`identity group reference depends on an unpublished canonical batch entity`、`published dialogue speaker has no resolved identity group`）。下一步应把发布门改成**条目级隔离**：独立条目照常发布，依赖未解析的条目单独隔离并记录诊断，而不是拖垮整个组件。
