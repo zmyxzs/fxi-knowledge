@@ -165,6 +165,13 @@ def _event_attempt_decisions(
     for attempt in attempts:
         if attempt["phase"] != "event_resolution":
             continue
+        # Failed attempts are audit records, not proofs. A transient model or
+        # transport failure must not invalidate every source in the folder.
+        if (
+            attempt.get("status") not in (None, "validated")
+            or not isinstance(attempt.get("validated_response"), dict)
+        ):
+            continue
         request = attempt.get("request")
         messages = request.get("messages") if isinstance(request, dict) else None
         if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):

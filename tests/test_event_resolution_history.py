@@ -118,3 +118,11 @@ def test_unpersisted_decision_cannot_authorize_an_appended_review():
     with pytest.raises(ValueError, match="no exact validated model decision"):
         _validate_event_resolution_transition(old, new, item_id="target", canonical_map={},
                                               mention_components={}, decisions=normalized)
+
+
+def test_failed_event_attempt_is_ignored_by_the_resolution_gate():
+    decisions, event_rows = event_gate._event_attempt_decisions(None, [{
+        "phase": "event_resolution", "status": "failed", "validated_response": None,
+    }])
+    assert decisions == []
+    assert event_rows == {}

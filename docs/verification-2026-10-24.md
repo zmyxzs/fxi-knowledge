@@ -184,18 +184,19 @@ parser = KnowledgeGraphParseService(
 2. 身份分块从 120 候选降到 **48**，避免超大请求。
 3. 对话引用校验与发布端对齐（见 `b1e63c5`）。
 
-### 结果（10 章、DeepSeek、空库）
+### 结果（10 章、DeepSeek、空库，最终）
 
-- 108 次调用、942 秒
-- `check` 8/10 completed、`resolution` 8/10、`publish` 8/10
-- **666 / 679 条知识已发布（98%）**
-- 身份：197 个候选 → 122 个组，合并 75 个
-- 对话集：8 published / 2 candidate
+- 113 次调用、1299 秒
+- `check` **10/10**、`resolution` **10/10**、`publish` **10/10**
+- **735 / 742 条知识已发布（99.1%）**，7 条 rejected
+- 身份：263 个候选 → 161 个组，合并 102 个
+- 事件整理：52 个目标事件、263 对候选
+- 对话集：**10/10 published**
 
-对比修复前同规模运行（`check` 1/10、`publish` 0/10），完成率从 10% 提升到 80%。
+### 最后一处级联修复
 
-### 仍待解决
+`resolution` 曾对 9 个来源统一报 `event resolution attempt has an invalid validated response`。根因是事件整理校验把**失败的 attempt**（`status=failed`、无 `validated_response`）也当成 proof 遍历；一个瞬时失败就让整个 folder 的 resolution 归零。修复：校验只读取 `validated` 且带 `validated_response` 的 attempt（`repository_parse_event_attempt_validation.py`）。
 
-2 个来源的评审仍停在「有效审校行已保存；剩余候选或对白仍待审校」。下一步应把**评审目标按候选数分窗**（当前仍按来源整章），让单次响应规模可控；这属于结构性改动，不影响已发布数据。
+### 仍待解决（非阻断）
 
-补充（同日复跑）：给评审单元加了一次「部分审校后重试」后，`check` 仍是 8/10，说明剩余失败不是瞬时抖动。复跑还暴露了更主要的发布侧问题：**发布依赖门是全组件原子**——只要某个 canonical 实体被语义复核排除，或对白说话者没有解析出身份组，引用它的整个组件都会失败（`identity group reference depends on an unpublished canonical batch entity`、`published dialogue speaker has no resolved identity group`）。下一步应把发布门改成**条目级隔离**：独立条目照常发布，依赖未解析的条目单独隔离并记录诊断，而不是拖垮整个组件。
+问答层的 requirement 执行预算：10 章问答仍会出现 `not_executed`（3 条 requirement 只执行 1 条）。这是 query planner/executor 的操作预算问题，不影响知识入库、检索与关联。
