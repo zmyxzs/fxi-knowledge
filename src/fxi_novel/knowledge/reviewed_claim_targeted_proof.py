@@ -4,7 +4,10 @@ from __future__ import annotations
 import hashlib
 import json
 
-from .graph_parser_review_repair import normalize_semantic_review_decision
+from .graph_parser_review_repair import (
+    normalize_raw_semantic_review_payload,
+    normalize_semantic_review_decision,
+)
 from .graph_parser_review_alignment import align_semantic_review_output
 from .graph_validation import load_model_json
 from .models_graph import KnowledgeGraphCandidateContent, KnowledgeGraphSemanticReviewOutput
@@ -46,8 +49,14 @@ def checked_targeted_review(repository, connection, *, batch, part, receipt_id, 
         raise ValueError("stored targeted response hash differs")
     ref = payload["review_target_refs"][0]
     segment_refs = [row["source_segment_ref"] for row in payload["segments"]]
+    candidates_by_ref = {
+        row["candidate_ref"]: row for row in payload["candidates"]
+    }
+    raw_payload = normalize_raw_semantic_review_payload(
+        load_model_json(raw), candidate_by_ref=candidates_by_ref, segment_refs=segment_refs,
+    )
     raw_output = KnowledgeGraphSemanticReviewOutput.model_validate(align_semantic_review_output(
-        load_model_json(raw), candidate_refs=[ref],
+        raw_payload, candidate_refs=[ref],
         known_refs={row["candidate_ref"] for row in [*payload["candidates"], *payload.get("prior_candidates", [])]},
         dialogue_record_ids=[], segment_refs=segment_refs, isolation_audit={},
     ))

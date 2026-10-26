@@ -518,8 +518,8 @@ class GraphParserReviewRepairTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(plan.candidate_refs, ("C1", "C2"))
 
     def test_entity_classification_repair_includes_dependent_fact(self) -> None:
-        entity_decision = self._decision("C1", "uncertain")
-        entity_decision["correction"] = {"category": "location"}
+        entity_decision = self._decision("C1", "supported")
+        entity_decision["evidence_segment_refs"] = ["E9"]
         payload = {
             "review_target_refs": ["C1", "C2"],
             "candidates": [
@@ -534,7 +534,7 @@ class GraphParserReviewRepairTests(unittest.IsolatedAsyncioTestCase):
         }))
         self.assertEqual(plan.candidate_refs, ("C1", "C2"))
         details = {row["candidate_ref"]: row for row in plan.row_details}
-        self.assertIn("assessment/correction", details["C1"]["failed_fields"])
+        self.assertIn("evidence_segment_refs", details["C1"]["failed_fields"])
         self.assertIn("entity_repair_dependency", details["C2"]["failed_fields"])
 
     @staticmethod

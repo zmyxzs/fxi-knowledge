@@ -216,6 +216,34 @@ def normalize_semantic_review_rows(decisions, candidate_by_ref, *, isolation_aud
     return normalized
 
 
+def normalize_raw_semantic_review_row(
+    row: Any,
+    *,
+    candidate: Mapping[str, Any] | None,
+    segment_order: Mapping[str, int],
+) -> Any:
+    """Strip contract-invalid noise from one raw review row."""
+    if not isinstance(row, dict):
+        return row
+    if row.get("assessment") in {"uncertain", "conflicted", "excluded"}:
+        row["correction"] = None
+    correction = row.get("correction")
+    if isinstance(correction, dict):
+        role = candidate.get("candidate_role") if isinstance(candidate, Mapping) else None
+        allowed = (
+            SEMANTIC_ENTITY_CORRECTION_FIELDS if role == "entity"
+            else SEMANTIC_FACT_CORRECTION_FIELDS
+        )
+        filtered = {key: value for key, value in correction.items() if key in allowed}
+        row["correction"] = filtered or None
+    cited = row.get("evidence_segment_refs")
+    if isinstance(cited, list) and all(isinstance(ref, str) for ref in cited):
+        row["evidence_segment_refs"] = sorted(
+            cited, key=lambda ref: segment_order.get(ref, len(segment_order)),
+        )
+    return row
+
+
 def normalize_raw_semantic_review_payload(
     payload: Any,
     *,
@@ -237,25 +265,12 @@ def normalize_raw_semantic_review_payload(
         return payload
     order = {str(ref): index for index, ref in enumerate(segment_refs)}
     for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if row.get("assessment") in {"uncertain", "conflicted", "excluded"}:
-            row["correction"] = None
-        correction = row.get("correction")
-        if isinstance(correction, dict):
-            candidate = candidate_by_ref.get(str(row.get("candidate_ref")), {})
-            role = candidate.get("candidate_role") if isinstance(candidate, Mapping) else None
-            allowed = (
-                SEMANTIC_ENTITY_CORRECTION_FIELDS if role == "entity"
-                else SEMANTIC_FACT_CORRECTION_FIELDS
-            )
-            filtered = {key: value for key, value in correction.items() if key in allowed}
-            row["correction"] = filtered or None
-        cited = row.get("evidence_segment_refs")
-        if isinstance(cited, list) and all(isinstance(ref, str) for ref in cited):
-            row["evidence_segment_refs"] = sorted(
-                cited, key=lambda ref: order.get(ref, len(order)),
-            )
+        normalize_raw_semantic_review_row(
+            row,
+            candidate=candidate_by_ref.get(str(row.get("candidate_ref")))
+            if isinstance(row, dict) else None,
+            segment_order=order,
+        )
     return payload
 
 
@@ -414,6 +429,14 @@ def build_semantic_review_repair_plan(
     }
     if not expected_set <= set(candidate_by_ref):
         return None
+    segment_order = {ref: index for index, ref in enumerate(segment_refs)}
+    for row in raw_reviews:
+        normalize_raw_semantic_review_row(
+            row,
+            candidate=candidate_by_ref.get(str(row.get("candidate_ref")))
+            if isinstance(row, dict) else None,
+            segment_order=segment_order,
+        )
     prior_refs = {
         str(row["candidate_ref"])
         for row in request_payload.get("prior_candidates", [])

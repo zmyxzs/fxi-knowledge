@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from .graph_parser_review_alignment import align_review_rows
 from .graph_parser_review_repair import (
     build_semantic_review_repair_plan,
+    normalize_raw_semantic_review_row,
     normalize_semantic_review_decision,
 )
 from .graph_validation import load_model_json
@@ -260,9 +261,13 @@ def select_semantic_review_partial(
         pending_candidates.update(repair_plan.candidate_refs)
 
     segment_set = set(segment_refs)
+    segment_order = {ref: index for index, ref in enumerate(segment_refs)}
     row_validation_failures: set[str] = set()
     for ref, row in safe_candidate_rows_by_ref.items():
         try:
+            normalize_raw_semantic_review_row(
+                row, candidate=candidate_by_ref.get(ref), segment_order=segment_order,
+            )
             decision = KnowledgeGraphSemanticReviewDecisionOutput.model_validate(row)
             cited = set(decision.evidence_segment_refs)
             if not cited <= segment_set or decision.evidence_segment_refs != [
