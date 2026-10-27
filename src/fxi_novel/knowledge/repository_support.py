@@ -970,7 +970,7 @@ def _knowledge_graph_card_match(
         return KnowledgeCardMatch(
             card_type="entity",
             title=title,
-            summary=summary or category,
+            summary=summary or title,
             category=category,
             matched_candidate_count=matched_candidate_count,
             aliases=tuple(
