@@ -737,6 +737,11 @@ class KnowledgeRetrievalSearchMixin:
             )
         items = result["items"]
         repository_coverage = result.get("coverage", {})
+        if scope.narrative_position is not None or scope.story_position is not None:
+            raise ValueError(
+                "legacy numeric narrative/story positions are not applied to story queries; "
+                "use reader_position with a verified coordinate"
+            )
         return {
             **result,
             "page_size": page_size,

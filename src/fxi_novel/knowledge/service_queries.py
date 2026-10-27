@@ -723,6 +723,20 @@ class KnowledgeQueryServiceMixin:
             "dense_search": round(dense_elapsed_ms, 2) if dense_elapsed_ms is not None else None,
             "total": round((perf_counter() - query_started) * 1000, 2),
         }
+        if coverage.get("narrative_position") is not None and not coverage.get(
+            "narrative_position_filter_applied"
+        ):
+            raise ValueError(
+                "legacy numeric narrative_position cannot be applied to search; "
+                "use reader_position with a verified coordinate"
+            )
+        if coverage.get("story_position") is not None and not coverage.get(
+            "story_position_filter_applied"
+        ):
+            raise ValueError(
+                "legacy numeric story_position cannot be applied to search; "
+                "use reader_position with a verified coordinate"
+            )
         return hits, study_notes, coverage
 
 

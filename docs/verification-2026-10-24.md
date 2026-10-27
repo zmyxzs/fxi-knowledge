@@ -197,6 +197,10 @@ parser = KnowledgeGraphParseService(
 
 `resolution` 曾对 9 个来源统一报 `event resolution attempt has an invalid validated response`。根因是事件整理校验把**失败的 attempt**（`status=failed`、无 `validated_response`）也当成 proof 遍历；一个瞬时失败就让整个 folder 的 resolution 归零。修复：校验只读取 `validated` 且带 `validated_response` 的 attempt（`repository_parse_event_attempt_validation.py`）。
 
+### 时间线过滤改为 fail-closed
+
+独立项目没有持久化的 writing narrative manifest，`writing_narrative_order_*` 三张表始终为空；此前请求数字型 `narrative_position` / `story_position` 会静默返回**未过滤**结果（search）或 0 条（story），容易让调用方误以为已按时间线截断。现在两种查询都会抛 `ValueError`，要求改用 `reader_position`（精确 source + codepoint 截断）或接入真实 manifest。
+
 ### 问答层的兜底
 
 10 章问答偶尔出现 `not_executed`：模型给出的 requirement 没有对应的 operation，执行器按契约只能标为未执行。修复：`_ensure_requirement_operations` 在计划生成后为每个缺少操作的 requirement 补一条 `semantic` 检索（优先用它的 `search_queries`，否则用描述）。同一问题连续 3 次复跑均为 2 条 requirement、全部 `supported`。
