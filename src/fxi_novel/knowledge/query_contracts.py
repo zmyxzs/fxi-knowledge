@@ -68,7 +68,7 @@ class QueryBudget(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     max_retrieval_rounds: int = Field(default=2, ge=0, le=2)
-    max_evidence_items: int = Field(default=200, ge=1, le=500)
+    max_evidence_items: int = Field(default=500, ge=1, le=500)
     max_operations: int = Field(default=64, ge=1, le=256)
     max_model_tokens: int | None = Field(default=None, ge=1)
 
@@ -967,4 +967,5 @@ def _evidence_matches_scope(reference: EvidenceRef, scope: EvidenceScopePin) -> 
     if scope.source_ids is not None and reference.source_id not in scope.source_ids:
         return False
     return True
+
 

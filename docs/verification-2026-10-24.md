@@ -201,4 +201,4 @@ parser = KnowledgeGraphParseService(
 
 10 章问答偶尔出现 `not_executed`：模型给出的 requirement 没有对应的 operation，执行器按契约只能标为未执行。修复：`_ensure_requirement_operations` 在计划生成后为每个缺少操作的 requirement 补一条 `semantic` 检索（优先用它的 `search_queries`，否则用描述）。同一问题连续 3 次复跑均为 2 条 requirement、全部 `supported`。
 
-多 requirement 的清单问题还有第二种饥饿：`all_matching` 枚举会先耗尽证据预算，后续 requirement 只能 `not_executed`。把默认 `max_evidence_items` 从 80 提到 **200** 后，第二个作品的「组织 + 身份」问题从 `supported + not_executed` 变为 **两条都 supported**（4 + 11 条证据）。
+多 requirement 的清单问题还有第二种饥饿：`all_matching` 枚举会先耗尽证据预算，后续 requirement 只能 `not_executed`。默认 `max_evidence_items` 从 80 提到 **500** 后，10 章双 requirement 清单问题（功法 + 属性）从 `supported + not_executed` 变为 **两条都 supported**（15 + 22 条证据）；同时给 `retrieval_notes` 加了 100 条上限截断，避免大预算批次因说明过多而校验失败。

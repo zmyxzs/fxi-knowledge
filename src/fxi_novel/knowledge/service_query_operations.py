@@ -726,6 +726,13 @@ class KnowledgeQueryOperationServiceMixin(
         }
         if narrative.identity:
             applied_scope["narrative_filters"] = narrative.identity
+        retrieval_notes = list(dict.fromkeys(batch_notes))
+        if len(retrieval_notes) > 100:
+            # RequirementBatchResult bounds the note list; keep the contract
+            # explicit instead of failing a large but valid batch.
+            retrieval_notes = retrieval_notes[:99] + [
+                f"检索说明已截断：共 {len(retrieval_notes)} 条，仅保留前 99 条。"
+            ]
         return RequirementBatchResult(
             requirements=requirement_results,
             operation_results=operation_results,
@@ -734,7 +741,7 @@ class KnowledgeQueryOperationServiceMixin(
             temporal_filter_status=temporal_status,
             knowledge_filter_applied=False,
             knowledge_filter_status=knowledge_status,
-            retrieval_notes=list(dict.fromkeys(batch_notes)),
+            retrieval_notes=retrieval_notes,
             scope_receipts=scope_receipts,
         )
 
