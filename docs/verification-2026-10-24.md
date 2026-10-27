@@ -197,6 +197,23 @@ parser = KnowledgeGraphParseService(
 
 `resolution` 曾对 9 个来源统一报 `event resolution attempt has an invalid validated response`。根因是事件整理校验把**失败的 attempt**（`status=failed`、无 `validated_response`）也当成 proof 遍历；一个瞬时失败就让整个 folder 的 resolution 归零。修复：校验只读取 `validated` 且带 `validated_response` 的 attempt（`repository_parse_event_attempt_validation.py`）。
 
+### 实体词典 + 短语优先（纯词法）
+
+jieba `HMM=False` 会把「杨凌」「韩萧」切成单字，BM25 只能靠单字 OR 匹配。现在：
+
+1. `search_planned` 首次进入某个 work 时，从知识库读取实体名/别名并 `jieba.add_word` 注册；
+2. `scripts/rebuild_entity_fts.py` 用同一词典重建 `chunk_fts`；
+3. `search_lexical` 先跑精确短语查询，再用 OR 查询补足，短语命中优先。
+
+实测（双作品库）：
+
+| 查询 | 重建前 | 重建后 |
+|---|---|---|
+| 杨凌 | 0 命中 | 3 命中，首条含杨凌原文 |
+| 风神金刚腿 | 0 命中 | 3 命中，首条熟练度暴涨 |
+| 韩萧 | 0 命中 | 3 命中，首条机械系属性 |
+| 瓦尔基里 | 3 条（噪声） | 3 条，首条「瓦尔基里溶液 · 致死率 · 70%」卡片 |
+
 ### 时间线过滤改为 fail-closed
 
 独立项目没有持久化的 writing narrative manifest，`writing_narrative_order_*` 三张表始终为空；此前请求数字型 `narrative_position` / `story_position` 会静默返回**未过滤**结果（search）或 0 条（story），容易让调用方误以为已按时间线截断。现在两种查询都会抛 `ValueError`，要求改用 `reader_position`（精确 source + codepoint 截断）或接入真实 manifest。

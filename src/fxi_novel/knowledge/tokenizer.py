@@ -5,6 +5,26 @@ import unicodedata
 
 import jieba
 
+_REGISTERED_TERMS: set[str] = set()
+
+
+def register_entity_terms(terms) -> int:
+    """Teach jieba the project's entity names so OOV names stay one token.
+
+    Indexing and querying share this path; call it before either side runs.
+    """
+    added = 0
+    for term in terms:
+        if not isinstance(term, str):
+            continue
+        value = term.strip()
+        if len(value) < 2 or value in _REGISTERED_TERMS:
+            continue
+        jieba.add_word(value)
+        _REGISTERED_TERMS.add(value)
+        added += 1
+    return added
+
 
 def tokenize_chinese(text: str) -> list[str]:
     """Split text with jieba and discard whitespace-only/punctuation-only tokens."""

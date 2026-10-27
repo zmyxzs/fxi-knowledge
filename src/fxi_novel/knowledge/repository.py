@@ -1,5 +1,7 @@
 """Public knowledge persistence facade assembled from domain-specific repository modules."""
 
+import json
+
 from .repository_support import *
 from .repository_projects import KnowledgeProjectRepositoryMixin
 from .repository_folders import KnowledgeFolderRepositoryMixin
@@ -106,3 +108,40 @@ class KnowledgeRepository(
         self._embedding_repository = EmbeddingProjectionRepository(
             database, indexing_enabled=embedding_indexing_enabled,
         )
+
+    def list_graph_entity_terms(self, space: str, work_id: str | None) -> list[str]:
+        """Return current entity names and aliases for tokenizer registration."""
+        with self.database.connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT version.content_json
+                FROM knowledge_item AS item
+                JOIN knowledge_version AS version
+                  ON version.item_id = item.id
+                 AND version.version = (SELECT MAX(latest.version)
+                                        FROM knowledge_version AS latest
+                                        WHERE latest.item_id = item.id)
+                WHERE item.kind = 'knowledge_graph_candidate'
+                  AND item.space = ? AND item.work_id IS ?
+                  AND item.status NOT IN ('deleted', 'rejected', 'superseded')
+                """,
+                (space, work_id),
+            ).fetchall()
+        terms: list[str] = []
+        for row in rows:
+            try:
+                content = json.loads(str(row["content_json"]))
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(content, dict) or content.get("candidate_role") != "entity":
+                continue
+            for value in (content.get("entity_name"), content.get("identity_display_name")):
+                if isinstance(value, str) and value.strip():
+                    terms.append(value.strip())
+            aliases = content.get("identity_aliases")
+            if isinstance(aliases, list):
+                terms.extend(
+                    alias.strip() for alias in aliases
+                    if isinstance(alias, str) and alias.strip()
+                )
+        return list(dict.fromkeys(terms))

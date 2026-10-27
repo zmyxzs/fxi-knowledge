@@ -10,6 +10,7 @@ from time import perf_counter
 from .service_support import *
 from .retrieval_support import _merge_search_hit_cards
 from .service_dense_retrieval import query_scope_fingerprint
+from .tokenizer import register_entity_terms
 
 logger = logging.getLogger(__name__)
 
@@ -505,6 +506,21 @@ class KnowledgeQueryServiceMixin:
             work_id=work_id, chapter_id=chapter_id,
         )
 
+    def _register_scope_entity_terms(self, space: str, work_id: str | None) -> None:
+        """Register the scope's entity names once so jieba keeps them as tokens."""
+        cache = getattr(self, "_registered_entity_terms", None)
+        if cache is None:
+            cache = self._registered_entity_terms = {}
+        key = (space, work_id)
+        if key in cache:
+            return
+        try:
+            terms = self.repository.list_graph_entity_terms(space, work_id)
+        except Exception:
+            logger.debug("entity term registration skipped", exc_info=True)
+            terms = []
+        cache[key] = register_entity_terms(terms)
+
     async def search_planned(
         self,
         queries: list[str],
@@ -550,6 +566,7 @@ class KnowledgeQueryServiceMixin:
         else:
             scopes = list(_resolved_scopes)
             scope_resolution_ms = 0.0
+        self._register_scope_entity_terms(space, work_id)
         lexical_retrieval = asyncio.to_thread(
             self._retrieval.search_planned,
             queries=queries,

@@ -784,58 +784,70 @@ class KnowledgeSourceContentRepositoryMixin:
             if any(not source_id.strip() for source_id in source_ids):
                 raise ValueError("source_ids must not contain blank values")
 
-        parameters: list[Any] = [query_expression, space, work_id]
-        source_filter = source_selection_filter(
-            "s", source_ids, folder_ids, parameters
-        )
-        parameters.append(top_k)
+        phrase_expression = fts_phrase_query(query)
 
-        with self.database.connection() as connection:
-            self._ensure_project_exists(connection, space, work_id)
-            rows = connection.execute(
-                """
-                SELECT
-                    c.id AS chunk_id,
-                    c.text AS chunk_text,
-                    c.start_offset,
-                    c.end_offset,
-                    c.offset_unit,
-                    s.id AS source_id,
-                    s.title AS source_title,
-                    s.source_uri,
-                    s.space,
-                    s.work_id,
-                    ss.id AS snapshot_id,
-                    ss.content_hash AS snapshot_hash,
-                    length(ss.content) AS snapshot_length,
-                    s.document_metadata_json,
-                    e.id AS evidence_id,
-                    e.quote_hash,
-                    bm25(chunk_fts) AS lexical_rank
-                FROM chunk_fts
-                CROSS JOIN chunk AS c ON c.id = chunk_fts.chunk_id
-                CROSS JOIN source_snapshot AS ss ON ss.id = c.snapshot_id
-                CROSS JOIN source AS s ON s.id = ss.source_id
-                CROSS JOIN evidence_span AS e ON e.chunk_id = c.id
-                WHERE chunk_fts MATCH ?
-                  AND s.space = ?
-                  AND s.work_id IS ?
-                  AND s.deleted_at IS NULL
-                  AND ss.id = (SELECT current.snapshot_id
-                               FROM source_current_snapshot AS current
-                               WHERE current.source_id = s.id)
-                  AND (s.work_id IS NULL OR EXISTS (
-                      SELECT 1 FROM knowledge_project AS p
-                      WHERE p.id = s.work_id AND p.space = s.space AND p.status = 'active'
-                  ))
-                """
-                + source_filter
-                + """
-                ORDER BY lexical_rank ASC, c.id ASC
-                LIMIT ?
-                """,
-                parameters,
-            ).fetchall()
+        def fetch_rows(expression: str, limit: int) -> list[Any]:
+            parameters: list[Any] = [expression, space, work_id]
+            filter_sql = source_selection_filter("s", source_ids, folder_ids, parameters)
+            parameters.append(limit)
+            with self.database.connection() as connection:
+                self._ensure_project_exists(connection, space, work_id)
+                return connection.execute(
+                    """
+                    SELECT
+                        c.id AS chunk_id,
+                        c.text AS chunk_text,
+                        c.start_offset,
+                        c.end_offset,
+                        c.offset_unit,
+                        s.id AS source_id,
+                        s.title AS source_title,
+                        s.source_uri,
+                        s.space,
+                        s.work_id,
+                        ss.id AS snapshot_id,
+                        ss.content_hash AS snapshot_hash,
+                        length(ss.content) AS snapshot_length,
+                        s.document_metadata_json,
+                        e.id AS evidence_id,
+                        e.quote_hash,
+                        bm25(chunk_fts) AS lexical_rank
+                    FROM chunk_fts
+                    CROSS JOIN chunk AS c ON c.id = chunk_fts.chunk_id
+                    CROSS JOIN source_snapshot AS ss ON ss.id = c.snapshot_id
+                    CROSS JOIN source AS s ON s.id = ss.source_id
+                    CROSS JOIN evidence_span AS e ON e.chunk_id = c.id
+                    WHERE chunk_fts MATCH ?
+                      AND s.space = ?
+                      AND s.work_id IS ?
+                      AND s.deleted_at IS NULL
+                      AND ss.id = (SELECT current.snapshot_id
+                                   FROM source_current_snapshot AS current
+                                   WHERE current.source_id = s.id)
+                      AND (s.work_id IS NULL OR EXISTS (
+                          SELECT 1 FROM knowledge_project AS p
+                          WHERE p.id = s.work_id AND p.space = s.space AND p.status = 'active'
+                      ))
+                    """
+                    + filter_sql
+                    + """
+                    ORDER BY lexical_rank ASC, c.id ASC
+                    LIMIT ?
+                    """,
+                    parameters,
+                ).fetchall()
+
+        rows: list[Any] = []
+        seen_chunk_ids: set[str] = set()
+        phrase_rows = fetch_rows(phrase_expression, top_k) if phrase_expression else []
+        for row in [*phrase_rows, *fetch_rows(query_expression, top_k)]:
+            chunk_id = str(row["chunk_id"])
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
+            rows.append(row)
+            if len(rows) >= top_k:
+                break
 
         results: list[SearchResult] = []
         for rank, row in enumerate(rows, start=1):
