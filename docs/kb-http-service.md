@@ -35,6 +35,8 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 
 任务状态写入数据库同目录的 `parse_jobs.json`（保留最近 100 条）；服务重启时，未完成的 `queued`/`running` 任务会标为 `interrupted`。并发由 `FXI_KB_PARSE_CONCURRENCY` 控制（默认 1，最大 4）。
 
+`GET /api/parse/{job_id}` 的 `progress` 字段每 3 秒刷新，包含各阶段计数和每个来源的 `extraction` / `check` / `resolution` / `publish` 状态，可直接做进度条。
+
 ## 鉴权
 
 服务启动时读取环境变量 `FXI_KB_API_KEY`：

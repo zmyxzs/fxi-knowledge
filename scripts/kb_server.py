@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hmac
 import importlib.util
 import json
@@ -17,6 +18,7 @@ import threading
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -316,6 +318,7 @@ class KnowledgeServer:
         self.jobs[job_id] = {
             "id": job_id, "status": "queued", "work": row["title"],
             "sources": ids, "batch_id": None, "error": None, "summary": None,
+            "progress": None,
         }
         self._save_jobs()
         threading.Thread(
@@ -367,7 +370,15 @@ class KnowledgeServer:
             force_reparse=False,
         )
         self._update_job(job_id, status="running", batch_id=batch["batch_id"])
-        await parser.run_parse_batch(batch["batch_id"])
+        watcher = asyncio.create_task(
+            self._watch_progress(job_id, knowledge, batch["batch_id"])
+        )
+        try:
+            await parser.run_parse_batch(batch["batch_id"])
+        finally:
+            watcher.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await watcher
         final = knowledge.get_knowledge_parse_batch(batch["batch_id"])
         status = final.get("status") or "failed"
         self._update_job(
@@ -377,6 +388,35 @@ class KnowledgeServer:
         )
         await gateway.aclose()
         db.close()
+
+    async def _watch_progress(self, job_id: str, knowledge: Any, batch_id: str) -> None:
+        while True:
+            try:
+                final = knowledge.get_knowledge_parse_batch(batch_id)
+            except Exception:  # noqa: BLE001 - progress is best-effort
+                return
+            if not isinstance(final, dict):
+                return
+            stages = final.get("stage_summary") or {}
+            sources = [
+                {
+                    "source_id": source.get("source_id"),
+                    "extraction": source.get("extraction_status"),
+                    "stages": {
+                        name: (value or {}).get("status")
+                        for name, value in (source.get("stages") or {}).items()
+                    },
+                }
+                for source in (final.get("sources") or [])[:20]
+            ]
+            self._update_job(job_id, progress={
+                "status": final.get("status"),
+                "stages": stages,
+                "sources": sources,
+            })
+            if final.get("status") in {"completed", "partial", "failed"}:
+                return
+            await asyncio.sleep(3)
 
 
 def handler_for(server: KnowledgeServer):
