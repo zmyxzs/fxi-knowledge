@@ -20,7 +20,7 @@
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
-| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash 记录 |
+| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash、纯词法检索与部署基准 |
 | `scripts/` | 仓库本地工具（`dump_baseline_schema.py` 生成 baseline schema 草稿） |
 | `tests/` | 只依赖上述包的 180 个测试文件（1787 个用例） |
 
@@ -154,7 +154,7 @@ database.close()
 
 - `Database.initialize()` 不会自动执行；不调用就直接查询会得到空库或 `no such table`。
 - `space` 只接受 `"writing"` 和 `"learning"`；`writing` 必须带 `work_id`，跨 space 的读写会被仓储拒绝。
-- `embedding_indexing_enabled=False` 时只建 FTS 投影，检索走词法；要走向量就把参数设为 `True`，并把一个 `embedding_projection` 传给 `KnowledgeService`。
+- `embedding_indexing_enabled=False` 时只建 FTS 投影，检索走词法；要走向量就把参数设为 `True`，并把一个 `embedding_projection` 传给 `KnowledgeService`。纯词法设计、实体词典、短语优先与基准见 [`docs/lexical-retrieval.md`](docs/lexical-retrieval.md)，服务器部署见 [`docs/deploy-lexical-benchmark.md`](docs/deploy-lexical-benchmark.md)。
 - `search_planned` 是 `async` 方法，返回 `(命中列表, 诊断信息, 覆盖度)`；`coverage_mode` 目前支持 `"focused"` 和 `"each_source_ending"`。
 - `writing` 空间检索要传 `branch`（如 `"main"`）：不传时 `knowledge_cards` 会被分支过滤掉，只剩原文命中。
 - 判断是否发布看 `knowledge_item.published_graph_version_id` 指针，不看 `status`（解析后仍是 `draft` 属正常）；详见 [`docs/publication-semantics.md`](docs/publication-semantics.md)。
