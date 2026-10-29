@@ -234,6 +234,14 @@ def write_snapshot(
 ) -> dict:
     if lifecycle_status not in {"active", "dead", "destroyed", "exited"}:
         raise ValueError("invalid lifecycle_status")
+    previous = (
+        get_snapshot(db, work_id, canonical_name, at_chapter=chapter_index - 1)
+        if chapter_index > 0 else None
+    )
+    merged_dynamic = dict((previous or {}).get("dynamic_state") or {})
+    merged_dynamic.update(dynamic_state or {})
+    merged_cognition = dict((previous or {}).get("cognition") or {})
+    merged_cognition.update(cognition or {})
     with db.transaction() as connection:
         connection.execute(
             """
@@ -248,8 +256,8 @@ def write_snapshot(
             """,
             (
                 work_id, canonical_name, chapter_index, lifecycle_status,
-                json.dumps(dynamic_state or {}, ensure_ascii=False),
-                json.dumps(cognition or {}, ensure_ascii=False), _now(),
+                json.dumps(merged_dynamic, ensure_ascii=False),
+                json.dumps(merged_cognition, ensure_ascii=False), _now(),
             ),
         )
     return get_snapshot(db, work_id, canonical_name, at_chapter=chapter_index) or {}
