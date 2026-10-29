@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from fxi_novel.knowledge import archive
 from fxi_novel.knowledge.consistency_audit import audit_work
 from fxi_novel.knowledge.consistency_review import adjudicate_entries_openai
 from fxi_novel.knowledge.event_reconciliation_service import EventVectorReconciliationService
@@ -183,6 +184,7 @@ class KnowledgeServer:
         self.jobs: dict[str, dict] = self._load_jobs()
         self.db = Database(database)
         self.db.initialize()
+        archive.ensure_schema(self.db)
         self.knowledge = KnowledgeService(
             KnowledgeRepository(self.db, embedding_indexing_enabled=False)
         )
@@ -241,8 +243,28 @@ class KnowledgeServer:
             for row in self.knowledge.list_sources(space=self.space, work_id=work_id)
         ]
 
-    def search(self, query: str, work: str | None, top_k: int) -> dict:
+    def search(
+        self, query: str, work: str | None, top_k: int, *,
+        include_inactive: bool = False,
+    ) -> dict:
         row = self.resolve_work(work)
+        archived = archive.list_entities(self.db, row["id"], include_inactive=True)
+        inactive = {
+            entity["canonical_name"]: entity.get("lifecycle_status")
+            for entity in archived
+            if entity.get("lifecycle_status") in {"dead", "destroyed"}
+        }
+        inactive_names = {
+            name
+            for entity in archived
+            if entity.get("lifecycle_status") in {"dead", "destroyed"}
+            for name in [entity["canonical_name"], *entity.get("aliases", [])]
+        }
+        if not include_inactive and query.strip() in inactive_names:
+            return {
+                "work": row["title"], "hits": [],
+                "note": "该实体已死亡/损毁；传 include_inactive=1 可查看历史",
+            }
         results, _, meta = asyncio.run(self.knowledge.search_planned(
             [query], space=self.space, work_id=row["id"], top_k=top_k,
             source_ids=self.source_ids(row["id"]), coverage_mode="focused",
@@ -258,13 +280,20 @@ class KnowledgeServer:
                 ) if part)
                 for card in (getattr(item, "knowledge_cards", None) or [])
             ]
+            cards = [
+                f"{card} [已死亡]" if card.split(" · ")[0] in inactive else card
+                for card in cards
+            ]
             hits.append({
                 "score": float(getattr(item, "score", 0.0)),
                 "text": str(getattr(item, "text", "")),
                 "source": getattr(getattr(item, "source", None), "title", None),
                 "cards": cards[:5],
             })
-        return {"work": row["title"], "mode": meta.get("retrieval_mode"), "hits": hits}
+        return {
+            "work": row["title"], "mode": meta.get("retrieval_mode"),
+            "hits": hits, "inactive_entities": sorted(inactive),
+        }
 
     def story(self, work: str | None, category: str | None, page_size: int) -> dict:
         row = self.resolve_work(work)
@@ -287,8 +316,17 @@ class KnowledgeServer:
             ],
         }
 
-    def entity(self, name: str, work: str | None) -> dict:
+    def entity(self, name: str, work: str | None, at_chapter: int | None = None) -> dict:
         row = self.resolve_work(work)
+        archived = archive.get_entity(self.db, row["id"], name)
+        if archived is not None:
+            snapshot = archive.get_snapshot(
+                self.db, row["id"], name, at_chapter=at_chapter,
+            )
+            return {
+                "work": row["title"], "archive": True, **archived,
+                "snapshot": snapshot,
+            }
         dossier = self.knowledge.query_entity_dossier(
             space=self.space, work_id=row["id"], entity=name, branch=self.branch,
         )
@@ -300,6 +338,79 @@ class KnowledgeServer:
             "counts": dossier["counts"],
             "relations": dossier["relations"][:50],
             "events": dossier["events"][:50],
+        }
+
+    def work_profile(self, work: str | None) -> dict:
+        row = self.resolve_work(work)
+        return {"work": row["title"], **archive.get_work_profile(self.db, row["id"])}
+
+    def set_work_profile(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            **archive.set_work_profile(
+                self.db, row["id"],
+                work_type=str(body.get("work_type") or "writing"),
+                genre=body.get("genre"),
+                world_summary=body.get("world_summary"),
+                protagonist_name=body.get("protagonist_name"),
+            ),
+        }
+
+    def upsert_entity(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        name = str(body.get("name") or "").strip()
+        if not name:
+            raise ValueError("name is required")
+        entity = archive.upsert_entity(
+            self.db, row["id"], name,
+            aliases=[str(item) for item in body.get("aliases") or []],
+            entity_type=body.get("entity_type"),
+            role_tier=body.get("role_tier"),
+            hard_rules=body.get("hard_rules"),
+            overwrite_hard_rules=bool(body.get("overwrite_hard_rules")),
+        )
+        snapshot = None
+        if body.get("chapter_index") is not None:
+            snapshot = archive.write_snapshot(
+                self.db, row["id"], entity["canonical_name"],
+                int(body["chapter_index"]),
+                lifecycle_status=str(body.get("lifecycle_status") or "active"),
+                dynamic_state=body.get("dynamic_state"),
+                cognition=body.get("cognition_and_relations"),
+            )
+        return {"work": row["title"], **entity, "snapshot": snapshot}
+
+    def compile_archive(self, work: str | None, chapter: int, outline: str) -> dict:
+        row = self.resolve_work(work)
+        result = archive.compile_archive(self.db, row["id"], chapter, outline)
+        result["work"] = row["title"]
+        return result
+
+    def audit_draft(self, work: str | None, text: str, chapter: int | None) -> dict:
+        row = self.resolve_work(work)
+        return archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
+
+    def add_story_record(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        category = str(body.get("category") or "").strip()
+        if not category:
+            raise ValueError("category is required")
+        chapter = body.get("chapter_index")
+        return archive.add_story_record(
+            self.db, row["id"], category, body.get("payload") or {},
+            chapter_index=int(chapter) if chapter is not None else None,
+        )
+
+    def list_story_records(
+        self, work: str | None, category: str | None, at_chapter: int | None,
+    ) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            "records": archive.list_story_records(
+                self.db, row["id"], category=category, at_chapter=at_chapter,
+            ),
         }
 
     def audit(self, work: str | None, *, llm: bool = False) -> dict:
@@ -320,13 +431,18 @@ class KnowledgeServer:
     def list_sources(self, work: str | None) -> dict:
         row = self.resolve_work(work)
         sources = self.knowledge.list_sources(space=self.space, work_id=row["id"])
-        return {
-            "work": row["title"],
-            "sources": [
-                {"id": source["id"], "title": source["title"]}
-                for source in sources
-            ],
-        }
+        items = []
+        for source in sources:
+            meta = archive.get_source_meta(self.db, source["id"])
+            items.append({
+                "id": source["id"],
+                "title": source["title"],
+                "chapter_index": meta.get("chapter_index"),
+                "has_raw": bool(meta.get("content_raw")),
+                "has_polished": bool(meta.get("content_polished")),
+                "outline_raw": meta.get("outline_raw"),
+            })
+        return {"work": row["title"], "sources": items}
 
     def create_work(self, title: str, description: str = "") -> dict:
         if not title.strip():
@@ -349,18 +465,37 @@ class KnowledgeServer:
             raise ValueError("work not found")
         return {"deleted": project_id}
 
-    def add_source(self, work: str | None, title: str, content: str) -> dict:
+    def add_source(
+        self,
+        work: str | None,
+        title: str,
+        content: str,
+        *,
+        chapter_index: int | None = None,
+        outline_raw: str | None = None,
+        content_raw: str | None = None,
+        content_polished: str | None = None,
+    ) -> dict:
         if not title.strip() or not content.strip():
             raise ValueError("title and content are required")
         row = self.resolve_work(work)
         result = self.knowledge.add_text_source(
             title=title.strip(), content=content, space=self.space, work_id=row["id"],
         )
+        chapter = chapter_index or archive.next_chapter_index(self.db, row["id"])
+        archive.set_source_meta(
+            self.db, result.source_id, row["id"],
+            chapter_index=int(chapter),
+            outline_raw=outline_raw,
+            content_raw=content_raw or content,
+            content_polished=content_polished or content,
+        )
         return {
             "id": result.source_id,
             "title": title.strip(),
             "chunks": len(result.chunk_ids),
             "work": row["title"],
+            "chapter_index": int(chapter),
         }
 
     def update_source(
@@ -383,9 +518,15 @@ class KnowledgeServer:
         return {"id": result.source_id, "chunks": len(result.chunk_ids)}
 
     def delete_source(self, source_id: str) -> dict:
+        meta = archive.get_source_meta(self.db, source_id)
         if not self.knowledge.delete_source(source_id):
             raise ValueError("source not found")
-        return {"deleted": source_id}
+        rollback = {"deleted_snapshots": 0, "deleted_story_records": 0}
+        if meta.get("chapter_index") is not None:
+            rollback = archive.rollback_after_chapter(
+                self.db, str(meta["work_id"]), int(meta["chapter_index"]),
+            )
+        return {"deleted": source_id, **rollback}
 
     def _llm_route(self) -> ModelRoute:
         if not (self.llm_base_url and self.llm_api_key and self.llm_model):
@@ -593,7 +734,11 @@ def handler_for(server: KnowledgeServer):
                         self._json({"error": "missing q"}, 400)
                         return
                     top_k = min(20, max(1, int(params.get("top_k", "5"))))
-                    self._json(server.search(query, params.get("work"), top_k))
+                    include_inactive = (params.get("include_inactive") or "").lower() in {"1", "true", "yes"}
+                    self._json(server.search(
+                        query, params.get("work"), top_k,
+                        include_inactive=include_inactive,
+                    ))
                     return
                 if parsed.path == "/api/story":
                     page_size = min(100, max(1, int(params.get("page_size", "20"))))
@@ -604,7 +749,22 @@ def handler_for(server: KnowledgeServer):
                     if not name:
                         self._json({"error": "missing name"}, 400)
                         return
-                    self._json(server.entity(name, params.get("work")))
+                    at_chapter = params.get("at_chapter")
+                    self._json(server.entity(
+                        name, params.get("work"),
+                        int(at_chapter) if at_chapter is not None else None,
+                    ))
+                    return
+                if parsed.path == "/api/work_profile":
+                    self._json(server.work_profile(params.get("work")))
+                    return
+                if parsed.path == "/api/story_record":
+                    category = (params.get("category") or "").strip() or None
+                    at_chapter = params.get("at_chapter")
+                    self._json(server.list_story_records(
+                        params.get("work"), category,
+                        int(at_chapter) if at_chapter is not None else None,
+                    ))
                     return
                 if parsed.path == "/api/sources":
                     self._json(server.list_sources(params.get("work")))
@@ -657,10 +817,42 @@ def handler_for(server: KnowledgeServer):
                     ), 201)
                     return
                 if method == "POST" and parts == ["api", "sources"]:
+                    chapter = body.get("chapter_index")
                     self._json(server.add_source(
                         body.get("work"), str(body.get("title") or ""),
                         str(body.get("content") or ""),
+                        chapter_index=int(chapter) if chapter is not None else None,
+                        outline_raw=body.get("outline_raw"),
+                        content_raw=body.get("content_raw"),
+                        content_polished=body.get("content_polished"),
                     ), 201)
+                    return
+                if method == "POST" and parts == ["api", "work_profile"]:
+                    self._json(server.set_work_profile(body.get("work"), body))
+                    return
+                if method == "POST" and parts == ["api", "entity"]:
+                    self._json(server.upsert_entity(body.get("work"), body))
+                    return
+                if method == "POST" and parts == ["api", "story_record"]:
+                    self._json(server.add_story_record(body.get("work"), body), 201)
+                    return
+                if method == "POST" and parts == ["api", "compile_archive"]:
+                    chapter = body.get("chapter_index")
+                    if chapter is None:
+                        raise ValueError("chapter_index is required")
+                    self._json(server.compile_archive(
+                        body.get("work"), int(chapter), str(body.get("outline") or ""),
+                    ))
+                    return
+                if method == "POST" and parts == ["api", "audit"]:
+                    text = str(body.get("text") or "")
+                    if not text.strip():
+                        raise ValueError("text is required")
+                    chapter = body.get("chapter_index")
+                    self._json(server.audit_draft(
+                        body.get("work"), text,
+                        int(chapter) if chapter is not None else None,
+                    ))
                     return
                 if method == "POST" and parts == ["api", "parse"]:
                     ids = body.get("source_ids")
