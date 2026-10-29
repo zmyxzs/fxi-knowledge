@@ -31,7 +31,9 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | POST | `/api/parse` | `{"work":"作品名","source_ids":["..."]}`（省略则全部来源）→ 202 任务 |
 | GET | `/api/parse/{job_id}` | 任务状态与阶段摘要 |
 
-上传章节只做导入和分块；解析通过 `/api/parse` 异步执行，使用 `FXI_KB_LLM_*` 配置的 OpenAI 兼容端点。单章通常 30–60 秒，任务状态在内存中保存（服务重启后丢失）。
+上传章节只做导入和分块；解析通过 `/api/parse` 异步执行，使用 `FXI_KB_LLM_*` 配置的 OpenAI 兼容端点。单章通常 30–60 秒。
+
+任务状态写入数据库同目录的 `parse_jobs.json`（保留最近 100 条）；服务重启时，未完成的 `queued`/`running` 任务会标为 `interrupted`。并发由 `FXI_KB_PARSE_CONCURRENCY` 控制（默认 1，最大 4）。
 
 ## 鉴权
 

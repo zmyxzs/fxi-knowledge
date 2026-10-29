@@ -69,12 +69,48 @@ class KnowledgeServer:
         self.llm_base_url = os.environ.get("FXI_KB_LLM_BASE_URL") or None
         self.llm_api_key = os.environ.get("FXI_KB_LLM_API_KEY") or None
         self.llm_model = os.environ.get("FXI_KB_LLM_MODEL") or None
-        self.jobs: dict[str, dict] = {}
+        self.jobs_path = database.parent / "parse_jobs.json"
+        self._jobs_lock = threading.RLock()
+        self.parse_concurrency = max(
+            1, min(4, int(os.environ.get("FXI_KB_PARSE_CONCURRENCY", "1")))
+        )
+        self.jobs: dict[str, dict] = self._load_jobs()
         self.db = Database(database)
         self.db.initialize()
         self.knowledge = KnowledgeService(
             KnowledgeRepository(self.db, embedding_indexing_enabled=False)
         )
+
+    def _load_jobs(self) -> dict[str, dict]:
+        try:
+            data = json.loads(self.jobs_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        jobs: dict[str, dict] = {}
+        if isinstance(data, dict):
+            data = list(data.values())
+        for job in data if isinstance(data, list) else []:
+            if not isinstance(job, dict) or not isinstance(job.get("id"), str):
+                continue
+            if job.get("status") in {"queued", "running"}:
+                job["status"] = "interrupted"
+                job["error"] = "server restarted before the job finished"
+            jobs[job["id"]] = job
+        return jobs
+
+    def _save_jobs(self) -> None:
+        with self._jobs_lock:
+            payload = list(self.jobs.values())[-100:]
+            temp = self.jobs_path.with_suffix(".json.tmp")
+            temp.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            os.replace(temp, self.jobs_path)
+
+    def _update_job(self, job_id: str, **fields) -> None:
+        with self._jobs_lock:
+            if job_id not in self.jobs:
+                return
+            self.jobs[job_id].update(fields)
+        self._save_jobs()
 
     def works(self) -> list[dict]:
         return [
@@ -281,6 +317,7 @@ class KnowledgeServer:
             "id": job_id, "status": "queued", "work": row["title"],
             "sources": ids, "batch_id": None, "error": None, "summary": None,
         }
+        self._save_jobs()
         threading.Thread(
             target=self._parse_thread, args=(job_id, row, ids), daemon=True,
         ).start()
@@ -296,8 +333,8 @@ class KnowledgeServer:
         try:
             asyncio.run(self._parse_async(job_id, row, ids))
         except Exception as exc:  # noqa: BLE001 - surface to the job status
-            self.jobs[job_id].update(
-                status="failed", error=f"{type(exc).__name__}: {exc}",
+            self._update_job(
+                job_id, status="failed", error=f"{type(exc).__name__}: {exc}",
             )
 
     async def _parse_async(self, job_id: str, row: dict, ids: list[str]) -> None:
@@ -325,14 +362,16 @@ class KnowledgeServer:
         )
         batch = parser.enqueue_parse_batch(
             space=self.space, work_id=row["id"], folder_id=None,
-            source_ids=ids, branch_id=self.branch, max_concurrency=1,
+            source_ids=ids, branch_id=self.branch,
+            max_concurrency=self.parse_concurrency,
             force_reparse=False,
         )
-        self.jobs[job_id].update(status="running", batch_id=batch["batch_id"])
+        self._update_job(job_id, status="running", batch_id=batch["batch_id"])
         await parser.run_parse_batch(batch["batch_id"])
         final = knowledge.get_knowledge_parse_batch(batch["batch_id"])
         status = final.get("status") or "failed"
-        self.jobs[job_id].update(
+        self._update_job(
+            job_id,
             status="completed" if status == "completed" else status,
             summary=final.get("stage_summary"),
         )
