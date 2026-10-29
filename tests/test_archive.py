@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fxi_novel.knowledge import archive
+from fxi_novel.knowledge import archive, archive_extraction
 from fxi_novel.storage.database import Database
 
 
@@ -71,4 +71,26 @@ def test_draft_audit_flags_dead_character(tmp_path) -> None:
     report = archive.audit_draft(db, "w1", "赵昆走进来，看着杨凌。", chapter_index=2)
     assert report["passed"] is False
     assert report["violations"][0]["type"] == "DEAD_CHARACTER_ACTIVE"
+    db.close()
+
+
+def test_apply_output_merges_ledger_delta(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"inventory_ledger": {"currency": {"铜钱": 1000}, "items": []}},
+    )
+    result = archive_extraction.apply_output(db, "w1", 2, {
+        "entities": [{
+            "name": "杨凌",
+            "ledger_delta": {"currency": {"铜钱": -400}, "items_added": ["灵米"]},
+        }],
+        "story_records": [{"category": "active_storyline", "payload": {"node": "采买"}}],
+    })
+    assert result["entities"][0]["name"] == "杨凌"
+    snapshot = archive.get_snapshot(db, "w1", "杨凌", at_chapter=2)
+    assert snapshot["dynamic_state"]["inventory_ledger"]["currency"]["铜钱"] == 600
+    assert "灵米" in snapshot["dynamic_state"]["inventory_ledger"]["items"]
+    assert archive.list_story_records(db, "w1", category="active_storyline")
     db.close()

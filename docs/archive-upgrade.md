@@ -41,13 +41,37 @@
 
 单元测试：`tests/test_archive.py`（别名、回滚、编译、初稿预审）。
 
+## 解析写入档案层（已实现）
+
+`POST /api/parse` 新增 `mode`：
+
+```json
+{"work": "神域囚徒", "source_ids": ["..."], "mode": "state_update"}
+```
+
+解析批次完成后，服务会读取该章的 `content_raw`，调用 LLM 抽取：
+
+- 实体与别名（新称呼追加到 `aliases`）
+- `lifecycle_status` 与 `dynamic_state`
+- `ledger_delta`（货币增减、物品增删），由后端做确定性加减
+- `cognition_and_relations`
+- `story_records`
+
+结果写入 `kb_entity_snapshot` / `kb_story_record`，任务状态的 `archive` 字段给出每章应用结果。实测：
+
+```text
+status=completed archive=completed
+chapter=1 entities=2 records=1
+杨凌 ledger={"currency":{"铜钱":-400},"items":["灵米"]}
+```
+
+`mode=deconstruct_extract` 目前返回 `not_implemented`。
+
 ## 尚未实现（下一里程碑）
 
-1. `/api/parse` 的 `mode=state_update`：目前解析仍写入原知识图谱；尚未把 LLM 输出映射到 `dynamic_state` / `cognition` / `ledger_delta`
-2. `deconstruct_extract` 拆书模式与 `trope_skeleton` / `style_anchor` 自动生成
-3. 结构化账本的代码级加减结算（当前只存 JSON，不做 delta 校验）
-4. 1 度关系扩展召回、`[已死亡]` 标签在词法结果中的完整过滤
-5. 章节编辑（PUT）后的自动回滚（目前只有删除触发）
+1. `deconstruct_extract` 拆书模式与 `trope_skeleton` / `style_anchor` 自动生成
+2. 1 度关系扩展召回、`[已死亡]` 标签在词法结果中的完整过滤
+3. 章节编辑（PUT）后的自动回滚（目前只有删除触发）
 
 ## 使用示例
 

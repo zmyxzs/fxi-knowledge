@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from fxi_novel.knowledge import archive
+from fxi_novel.knowledge import archive, archive_extraction
 from fxi_novel.knowledge.consistency_audit import audit_work
 from fxi_novel.knowledge.consistency_review import adjudicate_entries_openai
 from fxi_novel.knowledge.event_reconciliation_service import EventVectorReconciliationService
@@ -548,7 +548,12 @@ class KnowledgeServer:
         spec.loader.exec_module(module)
         return module.SourceOrderManifest(work_id=work_id, branch_id=self.branch)
 
-    def start_parse(self, work: str | None, source_ids: list[str] | None) -> dict:
+    def start_parse(
+        self, work: str | None, source_ids: list[str] | None,
+        *, mode: str = "state_update",
+    ) -> dict:
+        if mode not in {"state_update", "deconstruct_extract"}:
+            raise ValueError("mode must be state_update or deconstruct_extract")
         row = self.resolve_work(work)
         ids = list(source_ids) if source_ids else [
             source["id"]
@@ -563,7 +568,7 @@ class KnowledgeServer:
         self.jobs[job_id] = {
             "id": job_id, "status": "queued", "work": row["title"],
             "sources": ids, "batch_id": None, "error": None, "summary": None,
-            "progress": None,
+            "progress": None, "mode": mode, "archive": None,
         }
         self._save_jobs()
         threading.Thread(
@@ -631,8 +636,51 @@ class KnowledgeServer:
             status="completed" if status == "completed" else status,
             summary=final.get("stage_summary"),
         )
+        mode = self.jobs.get(job_id, {}).get("mode") or "state_update"
+        self._update_job(job_id, archive={"status": "running", "mode": mode})
+        archive_result = await self._run_archive_update(job_id, knowledge, row, ids, mode)
+        self._update_job(job_id, archive=archive_result)
         await gateway.aclose()
         db.close()
+
+    async def _run_archive_update(
+        self, job_id: str, knowledge: Any, row: dict, ids: list[str], mode: str,
+    ) -> dict:
+        if mode == "deconstruct_extract":
+            return {"status": "not_implemented", "mode": mode}
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            return {"status": "skipped", "reason": "LLM is not configured"}
+        chapters = []
+        try:
+            for source_id in ids:
+                meta = archive.get_source_meta(self.db, source_id)
+                chapter = meta.get("chapter_index")
+                text = str(meta.get("content_raw") or "")
+                if not text:
+                    current = knowledge.repository.get_source(
+                        source_id, content_offset=0, content_limit=50_000,
+                        include_evidence=False,
+                    )
+                    text = str((current or {}).get("content") or "")
+                if not text:
+                    continue
+                chapter_index = (
+                    int(chapter) if chapter is not None
+                    else archive.next_chapter_index(self.db, row["id"])
+                )
+                entities = archive.list_entities(self.db, row["id"])
+                output = await archive_extraction.extract_with_openai(
+                    text, entities, chapter_index,
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                chapters.append(archive_extraction.apply_output(
+                    self.db, row["id"], chapter_index, output,
+                ))
+            return {"status": "completed", "mode": mode, "chapters": chapters}
+        except Exception as exc:  # noqa: BLE001 - report archive failure on the job
+            return {"status": "failed", "mode": mode, "error": f"{type(exc).__name__}: {exc}"}
 
     async def _watch_progress(self, job_id: str, knowledge: Any, batch_id: str) -> None:
         while True:
@@ -863,6 +911,7 @@ def handler_for(server: KnowledgeServer):
                         raise ValueError("source_ids must be a list of strings")
                     self._json(server.start_parse(
                         body.get("work"), [str(item) for item in ids] if ids else None,
+                        mode=str(body.get("mode") or "state_update"),
                     ), 202)
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "works"]:
