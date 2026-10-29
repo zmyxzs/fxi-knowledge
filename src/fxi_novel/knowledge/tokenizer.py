@@ -97,16 +97,28 @@ def fts_documents(texts: list[str], *, batch_size: int = 128) -> list[str]:
     return results
 
 
+_QUERY_SYNONYMS: dict[str, tuple[str, ...]] = {
+    "数值": ("属性", "力量", "敏捷", "精神", "点"),
+    "身体": ("属性", "力量", "敏捷"),
+    "提升": ("增幅", "增加", "提高", "加成", "飙升"),
+    "功法": ("内功", "武技", "技能", "秘籍"),
+    "属性": ("数值", "力量", "敏捷", "精神"),
+    "增幅": ("提升", "增加", "加成"),
+}
+
+
 def fts_query(text: str) -> str:
     """Build a literal OR query from the same terms used for document indexing.
 
     Registered names also expand to their multi-character components so a
     query still matches card indexes that were built before registration.
+    Common domain words expand to a small synonym set (数值/属性/力量...).
     """
     terms: list[str] = []
     for term in tokenize_chinese(text):
         terms.append(term)
         terms.extend(_TERM_COMPONENTS.get(term, ()))
+        terms.extend(_QUERY_SYNONYMS.get(term, ()))
     quoted = ['"' + term.replace('"', '""') + '"' for term in dict.fromkeys(terms)]
     return " OR ".join(quoted)
 
@@ -151,6 +163,11 @@ def fts_phrase_group_query(text: str) -> str:
             for term in terms
             if len(term) > 1
         )
+    clauses.extend(
+        '"' + synonym.replace('"', '""') + '"'
+        for term in tokenize_chinese(text)
+        for synonym in _QUERY_SYNONYMS.get(term, ())
+    )
     return " OR ".join(dict.fromkeys(clause for clause in clauses if clause))
 
 
