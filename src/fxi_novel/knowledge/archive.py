@@ -8,6 +8,7 @@ lazily on first use (``CREATE TABLE IF NOT EXISTS``).
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -335,6 +336,74 @@ def add_story_record(
     return {"id": record_id, "category": category, "chapter_index": chapter_index}
 
 
+def related_entities(db: Any, work_id: str, name: str, *, limit: int = 10) -> list[dict]:
+    """One-hop strong relations from the entity's latest cognition snapshot."""
+    entity = resolve_entity(db, work_id, name)
+    if entity is None:
+        return []
+    snapshot = get_snapshot(db, work_id, entity["canonical_name"])
+    relations = (snapshot or {}).get("cognition", {}).get("relations") or []
+    results = []
+    for relation in relations:
+        if not isinstance(relation, dict):
+            continue
+        target_name = str(relation.get("target") or "").strip()
+        if not target_name:
+            continue
+        target = resolve_entity(db, work_id, target_name)
+        if target is None:
+            continue
+        target_snapshot = get_snapshot(db, work_id, target["canonical_name"])
+        state = (target_snapshot or {}).get("dynamic_state", {})
+        results.append({
+            "name": target["canonical_name"],
+            "surface_relation": relation.get("surface_relation"),
+            "true_attitude": relation.get("true_attitude"),
+            "location": state.get("current_location"),
+            "lifecycle_status": (target_snapshot or {}).get("lifecycle_status", "active"),
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
+def search_deconstruct(db: Any, work_id: str, query: str, *, limit: int = 5) -> list[dict]:
+    """Search deconstruct records by literal text in trope skeleton / style anchor."""
+    hits = []
+    for record in list_story_records(db, work_id):
+        if record["category"] not in {"trope_skeleton", "style_anchor"}:
+            continue
+        if query in json.dumps(record["payload"], ensure_ascii=False):
+            hits.append(record)
+        if len(hits) >= limit:
+            break
+    return hits
+
+
+def tick_timers(db: Any, work_id: str, chapter_index: int) -> list[dict]:
+    """Decrement chapter-based timers and report expired ones."""
+    updated = []
+    with db.transaction() as connection:
+        rows = connection.execute(
+            "SELECT * FROM kb_story_record WHERE work_id=? AND category='timer'",
+            (work_id,),
+        ).fetchall()
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            remaining = int(payload.get("chapters_remaining", 0)) - 1
+            payload["chapters_remaining"] = remaining
+            connection.execute(
+                "UPDATE kb_story_record SET payload_json=? WHERE id=?",
+                (json.dumps(payload, ensure_ascii=False), row["id"]),
+            )
+            updated.append({
+                "name": payload.get("name"),
+                "chapters_remaining": remaining,
+                "expired": remaining <= 0,
+            })
+    return updated
+
+
 def list_story_records(
     db: Any, work_id: str, *, category: str | None = None,
     at_chapter: int | None = None,
@@ -381,6 +450,15 @@ def compile_archive(
     ]
     protagonist = profile.get("protagonist_name")
     protagonist_entity = active.get(protagonist) if protagonist else None
+    if protagonist:
+        matched_names = {entity["canonical_name"] for entity in matched}
+        for related in related_entities(db, work_id, protagonist, limit=10):
+            if related["name"] in matched_names:
+                continue
+            entity = active.get(related["name"])
+            if entity is not None:
+                matched.append(entity)
+                matched_names.add(related["name"])
 
     sections: list[str] = [
         "### 模块一：题材与元规则",
@@ -397,6 +475,12 @@ def compile_archive(
                 sections.append(f"- {json.dumps(record['payload'], ensure_ascii=False)}")
         else:
             sections.append("- （暂无记录）")
+        if category == "active_storyline":
+            for timer in list_story_records(db, work_id, category="timer"):
+                sections.append(
+                    f"- 倒计时：{timer['payload'].get('name')} "
+                    f"剩余 {timer['payload'].get('chapters_remaining')} 章"
+                )
 
     sections.insert(4, "### 模块四：出场人物简表")
     for entity in matched[:20]:
@@ -461,5 +545,22 @@ def audit_draft(
                 "type": "DEAD_CHARACTER_ACTIVE",
                 "entity": entity["canonical_name"],
                 "detail": f"{entity['canonical_name']} 当前状态为 {status}，正文仍出现该名字",
+            })
+    spend = [
+        int(amount) for amount in re.findall(
+            r"(?:花了|花费|花掉|支付|消耗)(\d+)(?:两|枚|个)?(?:铜钱|灵石)", text,
+        )
+    ]
+    protagonist = get_work_profile(db, work_id).get("protagonist_name")
+    if spend and protagonist:
+        snapshot = get_snapshot(db, work_id, protagonist, at_chapter=chapter_index)
+        ledger = (snapshot or {}).get("dynamic_state", {}).get("inventory_ledger", {})
+        currency = ledger.get("currency", {})
+        total = sum(int(value) for value in currency.values() if isinstance(value, int))
+        if sum(spend) > total:
+            violations.append({
+                "type": "LEDGER_ERROR",
+                "entity": protagonist,
+                "detail": f"本章支出 {sum(spend)}，当前账面合计 {total}",
             })
     return {"passed": not violations, "violations": violations}

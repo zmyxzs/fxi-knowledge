@@ -245,9 +245,23 @@ class KnowledgeServer:
 
     def search(
         self, query: str, work: str | None, top_k: int, *,
-        include_inactive: bool = False,
+        include_inactive: bool = False, scope: str = "writing",
     ) -> dict:
         row = self.resolve_work(work)
+        if scope == "deconstruct":
+            hits = archive.search_deconstruct(self.db, row["id"], query, limit=top_k)
+            return {
+                "work": row["title"], "scope": "deconstruct",
+                "hits": [
+                    {
+                        "category": hit["category"],
+                        "chapter_index": hit["chapter_index"],
+                        "payload": hit["payload"],
+                        "score": 1.0,
+                    }
+                    for hit in hits
+                ],
+            }
         archived = archive.list_entities(self.db, row["id"], include_inactive=True)
         inactive = {
             entity["canonical_name"]: entity.get("lifecycle_status")
@@ -273,6 +287,11 @@ class KnowledgeServer:
         ))
         hits = []
         for item in results:
+            text = str(getattr(item, "text", ""))
+            if not include_inactive and any(
+                name in text and name not in query for name in inactive_names
+            ):
+                continue
             cards = [
                 " · ".join(part for part in (
                     getattr(card, "title", None), getattr(card, "predicate", None),
@@ -326,6 +345,7 @@ class KnowledgeServer:
             return {
                 "work": row["title"], "archive": True, **archived,
                 "snapshot": snapshot,
+                "related": archive.related_entities(self.db, row["id"], name),
             }
         dossier = self.knowledge.query_entity_dossier(
             space=self.space, work_id=row["id"], entity=name, branch=self.branch,
@@ -510,12 +530,25 @@ class KnowledgeServer:
         )
         if current is None:
             raise ValueError("source not found")
+        meta = archive.get_source_meta(self.db, source_id)
         result = self.knowledge.update_text_source(
             source_id, title=title.strip() or str(current.get("title") or ""),
             source_uri=current.get("source_uri"), content=content,
             expected_edit_revision=expected_edit_revision,
         )
-        return {"id": result.source_id, "chunks": len(result.chunk_ids)}
+        if meta:
+            archive.set_source_meta(
+                self.db, source_id, str(meta["work_id"]),
+                chapter_index=meta.get("chapter_index"),
+                outline_raw=meta.get("outline_raw"),
+                content_raw=content, content_polished=content,
+            )
+        rollback = {"deleted_snapshots": 0, "deleted_story_records": 0}
+        if meta and meta.get("chapter_index") is not None:
+            rollback = archive.rollback_after_chapter(
+                self.db, str(meta["work_id"]), int(meta["chapter_index"]),
+            )
+        return {"id": result.source_id, "chunks": len(result.chunk_ids), **rollback}
 
     def delete_source(self, source_id: str) -> dict:
         meta = archive.get_source_meta(self.db, source_id)
@@ -684,9 +717,21 @@ class KnowledgeServer:
                         api_key=self.llm_api_key,
                         model=self.llm_model,
                     )
-                    chapters.append(archive_extraction.apply_output(
+                    summary = archive_extraction.apply_output(
                         self.db, row["id"], chapter_index, output,
-                    ))
+                    )
+                    archive.add_story_record(
+                        self.db, row["id"], "active_storyline",
+                        {
+                            "chapter_index": chapter_index,
+                            "latest_node_snapshot": text[-150:],
+                        },
+                        chapter_index=chapter_index,
+                    )
+                    summary["timers"] = archive.tick_timers(
+                        self.db, row["id"], chapter_index,
+                    )
+                    chapters.append(summary)
             return {"status": "completed", "mode": mode, "chapters": chapters}
         except Exception as exc:  # noqa: BLE001 - report archive failure on the job
             return {"status": "failed", "mode": mode, "error": f"{type(exc).__name__}: {exc}"}
@@ -792,9 +837,10 @@ def handler_for(server: KnowledgeServer):
                         return
                     top_k = min(20, max(1, int(params.get("top_k", "5"))))
                     include_inactive = (params.get("include_inactive") or "").lower() in {"1", "true", "yes"}
+                    scope = (params.get("scope") or "writing").lower()
                     self._json(server.search(
                         query, params.get("work"), top_k,
-                        include_inactive=include_inactive,
+                        include_inactive=include_inactive, scope=scope,
                     ))
                     return
                 if parsed.path == "/api/story":

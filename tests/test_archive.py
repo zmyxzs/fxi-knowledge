@@ -94,6 +94,46 @@ def test_apply_deconstruct_output_writes_skeleton_and_anchor(tmp_path) -> None:
     db.close()
 
 
+def test_related_entities_follows_one_hop(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(db, "w1", "杨凌", 1, cognition={
+        "relations": [{"target": "赵洵", "surface_relation": "师徒"}],
+    })
+    archive.upsert_entity(db, "w1", "赵洵")
+    archive.write_snapshot(db, "w1", "赵洵", 1, dynamic_state={"current_location": "山门"})
+    related = archive.related_entities(db, "w1", "杨凌")
+    assert related[0]["name"] == "赵洵"
+    assert related[0]["location"] == "山门"
+    db.close()
+
+
+def test_search_deconstruct_and_timers(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.add_story_record(db, "w1", "trope_skeleton", {"steps": ["【剧情1】[主角]反击"]})
+    hits = archive.search_deconstruct(db, "w1", "剧情1")
+    assert hits and hits[0]["category"] == "trope_skeleton"
+    archive.add_story_record(db, "w1", "timer", {"name": "解毒", "chapters_remaining": 2})
+    assert archive.tick_timers(db, "w1", 2)[0]["chapters_remaining"] == 1
+    expired = archive.tick_timers(db, "w1", 3)[0]
+    assert expired["expired"] is True
+    db.close()
+
+
+def test_draft_audit_flags_overspend(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", protagonist_name="杨凌")
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"inventory_ledger": {"currency": {"铜钱": 1000}}},
+    )
+    report = archive.audit_draft(db, "w1", "他花了1200铜钱买剑。", chapter_index=1)
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "LEDGER_ERROR"
+    db.close()
+
+
 def test_apply_output_merges_ledger_delta(tmp_path) -> None:
     db = _db(tmp_path)
     archive.upsert_entity(db, "w1", "杨凌")

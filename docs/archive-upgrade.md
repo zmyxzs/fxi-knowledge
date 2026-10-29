@@ -78,10 +78,20 @@ tags=打脸,扮猪吃虎,深藏不露,以弱胜强
 anchor=[反派A]背着手踱步，冷笑道：“习武贵在意志，你这姿势错了。”[主角]没有争辩……
 ```
 
+## 本轮补齐
+
+- **1 度关系召回**：`GET /api/entity` 返回 `related`；`compile_archive` 模块四自动加入主角的 1 度关系
+- **章节编辑回滚**：`PUT /api/sources/{id}` 会回滚 `chapter_index >= N` 的快照，返回 `deleted_snapshots`
+- **初稿预审扩展**：除死亡角色外，新增 `LEDGER_ERROR`（正文支出超过账面余额）
+- **拆书检索**：`GET /api/search?scope=deconstruct` 直接检索 `trope_skeleton` / `style_anchor`
+- **生命周期过滤**：词法命中文本中出现死亡/损毁实体且查询未点名时，默认跳过
+- **最后 150 字定格**：`state_update` 每章写入 `active_storyline` 的 `latest_node_snapshot`
+- **倒计时**：`timer` 故事记录每章自动递减，`compile_archive` 模块七展示剩余章数
+
 ## 尚未实现（下一里程碑）
 
-1. 1 度关系扩展召回、`[已死亡]` 标签在词法结果中的完整过滤
-2. 章节编辑（PUT）后的自动回滚（目前只有删除触发）
+1. `hard_rules` / 红线的语义冲突检查（当前只做死亡与账本确定性校验）
+2. 未揭穿阴谋的自动格式化（`[反派表象 + 主角认知盲区锁]`）
 
 ## 使用示例
 
