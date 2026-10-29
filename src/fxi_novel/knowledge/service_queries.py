@@ -525,6 +525,10 @@ class KnowledgeQueryServiceMixin:
         """Re-tokenize a published source's chunks with the current entity terms."""
         return self.repository.rebuild_source_chunk_fts(source_id)
 
+    def rebuild_source_graph_fts(self, source_id: str) -> int:
+        """Re-tokenize a published source's card rows with the current entity terms."""
+        return self.repository.rebuild_source_graph_fts(source_id)
+
     def query_entity_dossier(
         self,
         *,

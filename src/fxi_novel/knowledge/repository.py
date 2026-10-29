@@ -175,3 +175,49 @@ class KnowledgeRepository(
                     (fts_document(str(chunk["text"] or "")), chunk["id"]),
                 )
         return len(chunks)
+
+    def rebuild_source_graph_fts(self, source_id: str) -> int:
+        """Re-tokenize one source's published card rows after entity names are known."""
+        from .repository_support import _knowledge_graph_search_text
+
+        with self.database.connection() as connection:
+            source = connection.execute(
+                "SELECT space, work_id FROM source WHERE id = ?", (source_id,),
+            ).fetchone()
+            if source is None:
+                return 0
+            rows = connection.execute(
+                """
+                SELECT item.id AS item_id, version.id AS version_id, version.content_json
+                FROM knowledge_item AS item
+                JOIN knowledge_parse_receipt AS receipt
+                  ON receipt.id = item.origin_parse_receipt_id
+                JOIN knowledge_version AS version
+                  ON version.id = item.published_graph_version_id
+                WHERE receipt.source_id = ?
+                  AND item.published_graph_version_id IS NOT NULL
+                  AND item.status NOT IN ('deleted', 'rejected', 'superseded')
+                """,
+                (source_id,),
+            ).fetchall()
+        register_entity_terms(
+            self.list_graph_entity_terms(str(source["space"]), source["work_id"])
+        )
+        with self.database.transaction() as connection:
+            for row in rows:
+                try:
+                    content = json.loads(str(row["content_json"]))
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(content, dict):
+                    continue
+                title, body = _knowledge_graph_search_text(content)
+                connection.execute(
+                    """
+                    UPDATE knowledge_graph_fts
+                    SET title_tokens = '', body_tokens = ?
+                    WHERE item_id = ? AND version_id = ?
+                    """,
+                    (fts_document(f"{title} {body}"), row["item_id"], row["version_id"]),
+                )
+        return len(rows)

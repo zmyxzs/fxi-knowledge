@@ -98,8 +98,16 @@ def fts_documents(texts: list[str], *, batch_size: int = 128) -> list[str]:
 
 
 def fts_query(text: str) -> str:
-    """Build a literal OR query from the same terms used for document indexing."""
-    quoted = ['"' + term.replace('"', '""') + '"' for term in tokenize_chinese(text)]
+    """Build a literal OR query from the same terms used for document indexing.
+
+    Registered names also expand to their multi-character components so a
+    query still matches card indexes that were built before registration.
+    """
+    terms: list[str] = []
+    for term in tokenize_chinese(text):
+        terms.append(term)
+        terms.extend(_TERM_COMPONENTS.get(term, ()))
+    quoted = ['"' + term.replace('"', '""') + '"' for term in dict.fromkeys(terms)]
     return " OR ".join(quoted)
 
 

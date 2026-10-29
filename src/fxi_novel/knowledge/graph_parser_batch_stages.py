@@ -916,6 +916,9 @@ class KnowledgeGraphParseBatchStagesMixin:
                     await asyncio.to_thread(
                         self.knowledge.rebuild_source_chunk_fts, source_id,
                     )
+                    await asyncio.to_thread(
+                        self.knowledge.rebuild_source_graph_fts, source_id,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -1001,6 +1004,9 @@ class KnowledgeGraphParseBatchStagesMixin:
                         }):
                             await asyncio.to_thread(
                                 self.knowledge.rebuild_source_chunk_fts, source_id,
+                            )
+                            await asyncio.to_thread(
+                                self.knowledge.rebuild_source_graph_fts, source_id,
                             )
                     continue
                 if superseded:
