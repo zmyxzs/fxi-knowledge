@@ -209,6 +209,19 @@ jieba `HMM=False` 会把「杨凌」「韩萧」切成单字，BM25 只能靠单
 
 发布阶段现在会自动重建该来源的 chunk FTS 和已发布卡片 FTS（单来源约 5 秒）；已有库可用 `scripts/rebuild_entity_fts.py --graph` 一次性重建。
 
+### 纯词法基准脚本
+
+```powershell
+python scripts/rebuild_entity_fts.py data/verify.sqlite3 --graph   # 已有库升级一次
+python scripts/benchmark_lexical.py data/verify.sqlite3 --work 神域囚徒
+```
+
+脚本输出：每条查询的命中数/耗时/首条、六类故事计数、实体 dossier。10 章库实测（重建后）：
+
+- 5 条查询全部命中
+- 热查询 0.4–0.8 秒；首次 4.9 秒（jieba 冷启动）
+- dossier 杨凌 209 条、1 个身份组
+
 实测（双作品库）：
 
 | 查询 | 重建前 | 重建后 |
