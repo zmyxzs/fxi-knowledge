@@ -34,8 +34,7 @@ from fxi_novel.models.gateway import GatewayConfig, ModelGateway, ModelRoute
 from fxi_novel.project_paths import project_root
 from fxi_novel.storage.database import Database
 
-INDEX_HTML = """<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8">
+INDEX_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>知识库</title>
 <style>
@@ -60,6 +59,93 @@ f.onsubmit=async e=>{e.preventDefault();out.innerHTML='';st.textContent='搜索�
   div.innerHTML='<div class="meta">'+(h.source||'')+' · '+h.score.toFixed(4)+'</div>'+cards+'<div class="text"></div>';
   div.querySelector('.text').textContent=h.text;out.appendChild(div);}};
 </script></body></html>"""
+
+
+DOCS_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>知识库 API</title>
+<style>
+ body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;max-width:900px;margin:40px auto;padding:0 16px;color:#1f2933;line-height:1.6}
+ code{background:#f1f3f5;padding:1px 4px;border-radius:3px}
+ table{border-collapse:collapse;width:100%}
+ th,td{border-bottom:1px solid #e4e7eb;padding:8px;text-align:left;font-size:14px}
+ .m{font-family:ui-monospace,Consolas,monospace;font-weight:600}
+ .auth{color:#b45309}
+ pre{background:#f8f9fa;padding:12px;border-radius:6px;overflow:auto}
+</style></head><body>
+<h2>知识库 API</h2>
+<p>读接口公开；写接口需要 <code>X-API-Key</code>。OpenAPI: <a href="/api/openapi.json">/api/openapi.json</a></p>
+<table>
+<tr><th>方法</th><th>路径</th><th>说明</th></tr>
+<tr><td class="m">GET</td><td>/health</td><td>健康检查与作品列表</td></tr>
+<tr><td class="m">GET</td><td>/api/works</td><td>作品列表</td></tr>
+<tr><td class="m auth">POST</td><td>/api/works</td><td class="auth">创建作品</td></tr>
+<tr><td class="m auth">PUT</td><td>/api/works/{id}</td><td class="auth">修改作品</td></tr>
+<tr><td class="m auth">DELETE</td><td>/api/works/{id}</td><td class="auth">删除作品</td></tr>
+<tr><td class="m">GET</td><td>/api/sources?work=</td><td>章节列表</td></tr>
+<tr><td class="m auth">POST</td><td>/api/sources</td><td class="auth">上传章节</td></tr>
+<tr><td class="m auth">PUT</td><td>/api/sources/{id}</td><td class="auth">编辑章节</td></tr>
+<tr><td class="m auth">DELETE</td><td>/api/sources/{id}</td><td class="auth">删除章节</td></tr>
+<tr><td class="m">GET</td><td>/api/search?q=&amp;work=&amp;top_k=</td><td>词法检索 + 卡片</td></tr>
+<tr><td class="m">GET</td><td>/api/story?work=&amp;category=</td><td>结构化故事记录</td></tr>
+<tr><td class="m">GET</td><td>/api/entity?name=&amp;work=</td><td>实体 dossier</td></tr>
+<tr><td class="m">GET</td><td>/api/audit?work=&amp;llm=</td><td>设定一致性检查</td></tr>
+<tr><td class="m auth">POST</td><td>/api/parse</td><td class="auth">异步解析</td></tr>
+<tr><td class="m">GET</td><td>/api/parse/{job_id}</td><td>解析进度与结果</td></tr>
+</table>
+<h3>示例</h3>
+<pre>curl https://kg.zmteams.site/api/search?q=杨凌&amp;work=神域囚徒
+
+curl -X POST https://kg.zmteams.site/api/works \\
+  -H "X-API-Key: $FXI_KB_API_KEY" -H "Content-Type: application/json" \\
+  -d '{"title":"新作品"}'
+
+curl -X POST https://kg.zmteams.site/api/parse \\
+  -H "X-API-Key: $FXI_KB_API_KEY" -H "Content-Type: application/json" \\
+  -d '{"work":"新作品"}'</pre>
+</body></html>"""
+
+
+OPENAPI_SPEC: dict[str, Any] = {
+    "openapi": "3.1.0",
+    "info": {"title": "fxi knowledge base", "version": "1.0"},
+    "servers": [{"url": "https://kg.zmteams.site"}],
+    "components": {
+        "securitySchemes": {
+            "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"},
+        },
+    },
+    "paths": {
+        "/health": {"get": {"summary": "Health and works"}},
+        "/api/works": {
+            "get": {"summary": "List works"},
+            "post": {"summary": "Create work", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/works/{id}": {
+            "put": {"summary": "Update work", "security": [{"ApiKeyAuth": []}]},
+            "delete": {"summary": "Delete work", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/sources": {
+            "get": {"summary": "List sources"},
+            "post": {"summary": "Upload source", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/sources/{id}": {
+            "put": {"summary": "Edit source", "security": [{"ApiKeyAuth": []}]},
+            "delete": {"summary": "Delete source", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/search": {"get": {"summary": "Lexical search with cards"}},
+        "/api/story": {"get": {"summary": "Structured story records"}},
+        "/api/entity": {"get": {"summary": "Entity dossier"}},
+        "/api/audit": {"get": {"summary": "Consistency audit"}},
+        "/api/parse": {
+            "post": {"summary": "Start async parse", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/parse/{job_id}": {"get": {"summary": "Parse job status and progress"}},
+        "/docs": {"get": {"summary": "API documentation"}},
+        "/api/openapi.json": {"get": {"summary": "OpenAPI document"}},
+    },
+}
 
 
 class KnowledgeServer:
@@ -445,6 +531,17 @@ def handler_for(server: KnowledgeServer):
                     self.send_header("Content-Length", str(len(body)))
                     self.end_headers()
                     self.wfile.write(body)
+                    return
+                if parsed.path == "/docs":
+                    body = DOCS_HTML.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if parsed.path == "/api/openapi.json":
+                    self._json(OPENAPI_SPEC)
                     return
                 if parsed.path == "/health":
                     self._json({"status": "ok", "works": server.works()})

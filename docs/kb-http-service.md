@@ -30,6 +30,20 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | DELETE | `/api/sources/{id}` | — |
 | POST | `/api/parse` | `{"work":"作品名","source_ids":["..."]}`（省略则全部来源）→ 202 任务 |
 | GET | `/api/parse/{job_id}` | 任务状态与阶段摘要 |
+| `/docs` | 浏览器可读的 API 文档 |
+| `/api/openapi.json` | OpenAPI 文档（仓库里另有 `docs/openapi.yaml`） |
+
+Python 调用示例（`examples/kb_client.py`）：
+
+```python
+from examples.kb_client import KnowledgeClient
+
+client = KnowledgeClient(api_key="...")
+client.search("杨凌 等级")
+client.audit("神域囚徒", llm=True)
+client.upload_source("新作品", "001 第一章", "正文……")
+client.parse("新作品")
+```
 
 上传章节只做导入和分块；解析通过 `/api/parse` 异步执行，使用 `FXI_KB_LLM_*` 配置的 OpenAI 兼容端点。单章通常 30–60 秒。
 

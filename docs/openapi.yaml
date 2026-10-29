@@ -1,0 +1,226 @@
+openapi: 3.1.0
+info:
+  title: fxi knowledge base
+  version: "1.0"
+  description: 只读查询公开；写接口需要 X-API-Key。
+servers:
+  - url: https://kg.zmteams.site
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+  schemas:
+    Work:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+    Source:
+      type: object
+      properties:
+        id: {type: string}
+        title: {type: string}
+    SearchHit:
+      type: object
+      properties:
+        score: {type: number}
+        text: {type: string}
+        source: {type: [string, "null"]}
+        cards:
+          type: array
+          items: {type: string}
+    AuditReport:
+      type: object
+      properties:
+        records: {type: integer}
+        conflicts: {type: array, items: {type: object}}
+        state_changes: {type: array, items: {type: object}}
+        needs_review: {type: array, items: {type: object}}
+        category_mismatches: {type: array, items: {type: object}}
+        dangling_targets: {type: array, items: {type: object}}
+    ParseJob:
+      type: object
+      properties:
+        id: {type: string}
+        status:
+          type: string
+          enum: [queued, running, completed, partial, failed, interrupted]
+        work: {type: string}
+        batch_id: {type: [string, "null"]}
+        error: {type: [string, "null"]}
+        progress: {type: [object, "null"]}
+        summary: {type: [object, "null"]}
+paths:
+  /health:
+    get:
+      summary: 健康检查
+      responses:
+        "200": {description: OK}
+  /api/works:
+    get:
+      summary: 作品列表
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 创建作品
+      security: [{ApiKeyAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: {type: string}
+                description: {type: string}
+      responses:
+        "201": {description: Created}
+  /api/works/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    put:
+      summary: 修改作品
+      security: [{ApiKeyAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title: {type: string}
+                description: {type: string}
+      responses:
+        "200": {description: OK}
+    delete:
+      summary: 删除作品
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/sources:
+    get:
+      summary: 章节列表
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 上传章节
+      security: [{ApiKeyAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                work: {type: string}
+                title: {type: string}
+                content: {type: string}
+      responses:
+        "201": {description: Created}
+  /api/sources/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    put:
+      summary: 编辑章节
+      security: [{ApiKeyAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, content]
+              properties:
+                title: {type: string}
+                content: {type: string}
+      responses:
+        "200": {description: OK}
+    delete:
+      summary: 删除章节
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/search:
+    get:
+      summary: 词法检索 + 卡片
+      parameters:
+        - {name: q, in: query, required: true, schema: {type: string}}
+        - {name: work, in: query, schema: {type: string}}
+        - {name: top_k, in: query, schema: {type: integer, default: 5}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  work: {type: string}
+                  mode: {type: string}
+                  hits:
+                    type: array
+                    items: {$ref: "#/components/schemas/SearchHit"}
+  /api/story:
+    get:
+      summary: 结构化故事记录
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: category, in: query, schema: {type: string}}
+        - {name: page_size, in: query, schema: {type: integer, default: 20}}
+      responses:
+        "200": {description: OK}
+  /api/entity:
+    get:
+      summary: 实体 dossier
+      parameters:
+        - {name: name, in: query, required: true, schema: {type: string}}
+        - {name: work, in: query, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+  /api/audit:
+    get:
+      summary: 设定一致性检查
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: llm, in: query, schema: {type: string, enum: ["0", "1"]}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AuditReport"}
+  /api/parse:
+    post:
+      summary: 启动异步解析
+      security: [{ApiKeyAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                work: {type: string}
+                source_ids:
+                  type: array
+                  items: {type: string}
+      responses:
+        "202": {description: Accepted}
+  /api/parse/{job_id}:
+    get:
+      summary: 解析任务状态
+      parameters:
+        - {name: job_id, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ParseJob"}
