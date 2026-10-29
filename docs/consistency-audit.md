@@ -8,6 +8,9 @@
 # 1. 导入并解析作品（发布后会自动重建 FTS）
 # 2. 跑检查
 python scripts/audit_consistency.py data/verify.sqlite3 --work 神域囚徒 --output data/audit.json
+
+# 3. 或走 HTTP（kg 服务）
+curl 'https://kg.zmteams.site/api/audit?work=神域囚徒'
 ```
 
 输出四类结果：

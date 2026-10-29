@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from fxi_novel.knowledge.consistency_audit import audit_work
 from fxi_novel.knowledge.repository import KnowledgeRepository
 from fxi_novel.knowledge.service import KnowledgeService
 from fxi_novel.storage.database import Database
@@ -146,6 +147,12 @@ class KnowledgeServer:
             "events": dossier["events"][:50],
         }
 
+    def audit(self, work: str | None) -> dict:
+        row = self.resolve_work(work)
+        report = audit_work(self.db, row["id"])
+        report["work"] = row["title"]
+        return report
+
     def list_sources(self, work: str | None) -> dict:
         row = self.resolve_work(work)
         sources = self.knowledge.list_sources(space=self.space, work_id=row["id"])
@@ -271,6 +278,9 @@ def handler_for(server: KnowledgeServer):
                     return
                 if parsed.path == "/api/sources":
                     self._json(server.list_sources(params.get("work")))
+                    return
+                if parsed.path == "/api/audit":
+                    self._json(server.audit(params.get("work")))
                     return
                 self._json({"error": "not found"}, 404)
             except ValueError as exc:

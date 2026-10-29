@@ -15,6 +15,7 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | `/api/search?q=杨凌&top_k=5&work=神域囚徒` | 词法检索 + 卡片 |
 | `/api/story?work=神域囚徒&category=relationship&page_size=20` | 结构化故事记录 |
 | `/api/entity?name=杨凌&work=神域囚徒` | 实体 dossier（身份组、计数、关系、事件） |
+| `/api/audit?work=神域囚徒` | 设定一致性检查（同章冲突、跨章变化、待复核、类别/悬空引用） |
 
 ### 写（需要 `X-API-Key`）
 
