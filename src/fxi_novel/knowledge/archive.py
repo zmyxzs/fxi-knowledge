@@ -478,7 +478,28 @@ def compile_archive(
             db, work_id, category=category, at_chapter=chapter_index,
         )
         sections.append(f"### {title}")
-        if records:
+        if category == "foreshadow":
+            unrevealed = [
+                record for record in records
+                if not record["payload"].get("is_revealed")
+            ]
+            if unrevealed:
+                for record in unrevealed:
+                    payload = record["payload"]
+                    surface = (
+                        payload.get("surface_action") or payload.get("surface")
+                        or "反派按表象行动"
+                    )
+                    blind = (
+                        payload.get("protagonist_blind_spot")
+                        or "主角当前不知情，严禁写主角起疑"
+                    )
+                    sections.append(
+                        f"- [反派表象行为：{surface}；主角认知盲区锁：{blind}]"
+                    )
+            else:
+                sections.append("- （暂无未揭穿伏笔）")
+        elif records:
             for record in records:
                 sections.append(f"- {json.dumps(record['payload'], ensure_ascii=False)}")
         else:

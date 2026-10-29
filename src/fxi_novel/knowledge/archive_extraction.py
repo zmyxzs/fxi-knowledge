@@ -202,6 +202,87 @@ def apply_deconstruct_output(
     }
 
 
+AUDIT_PROMPT = """你是小说设定审校。根据正文、实体硬设定、当前状态和红线，找出违规项。
+只输出 JSON：
+{"violations": [{"type": "HARD_RULE_CONFLICT|REDLINE_BREACH|DEAD_CHARACTER_ACTIVE|LEDGER_ERROR", "entity": "可选", "detail": "具体问题"}]}
+规则：
+- 硬设定（hard_rules）不得被正文改写；身份、外貌、性格底色、底线、口癖、功法机制冲突都要报。
+- 红线（redlines）命中即报 REDLINE_BREACH。
+- 已死亡/已损毁实体不得以活人方式行动。
+- 账本支出不得超过当前余额。
+- 没有问题返回 {"violations": []}。"""
+
+
+def build_audit_messages(
+    text: str, entities: list[dict], redlines: list[str], chapter_index: int,
+) -> list[dict[str, str]]:
+    context = {
+        "chapter_index": chapter_index,
+        "redlines": redlines,
+        "entities": [
+            {
+                "name": entity.get("canonical_name"),
+                "aliases": entity.get("aliases", []),
+                "hard_rules": entity.get("hard_rules", {}),
+                "dynamic_state": entity.get("dynamic_state", {}),
+                "lifecycle_status": entity.get("lifecycle_status"),
+            }
+            for entity in entities[:80]
+        ],
+        "chapter_text": text[:12000],
+    }
+    return [
+        {"role": "system", "content": AUDIT_PROMPT},
+        {"role": "user", "content": json.dumps(context, ensure_ascii=False)},
+    ]
+
+
+def parse_audit_output(text: str) -> list[dict]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+    data = json.loads(cleaned)
+    violations = data.get("violations") if isinstance(data, dict) else None
+    if not isinstance(violations, list):
+        raise ValueError("violations must be a list")
+    return [
+        {
+            "type": str(item.get("type") or "HARD_RULE_CONFLICT"),
+            "entity": item.get("entity"),
+            "detail": str(item.get("detail") or ""),
+        }
+        for item in violations if isinstance(item, dict)
+    ]
+
+
+async def audit_with_openai(
+    text: str,
+    entities: list[dict],
+    redlines: list[str],
+    chapter_index: int,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 120.0,
+) -> list[dict]:
+    url = base_url.rstrip("/") + "/chat/completions"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": build_audit_messages(text, entities, redlines, chapter_index),
+                "temperature": 0,
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_audit_output(content)
+
+
 def _merge_ledger(previous: dict, delta: dict) -> dict:
     ledger = json.loads(json.dumps(previous or {}))
     currency = ledger.setdefault("currency", {})

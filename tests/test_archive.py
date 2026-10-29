@@ -134,6 +134,27 @@ def test_draft_audit_flags_overspend(tmp_path) -> None:
     db.close()
 
 
+def test_compile_formats_unrevealed_foreshadow(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", genre="玄幻")
+    archive.add_story_record(db, "w1", "foreshadow", {
+        "hidden_truth": "马东私吞银两",
+        "surface_action": "马东训斥弟子",
+        "protagonist_blind_spot": "主角不知情",
+        "is_revealed": False,
+    }, chapter_index=1)
+    markdown = archive.compile_archive(db, "w1", 2, "杨凌")["compiled_archive_markdown"]
+    assert "[反派表象行为：马东训斥弟子；主角认知盲区锁：主角不知情]" in markdown
+    db.close()
+
+
+def test_parse_audit_output_strips_fences() -> None:
+    violations = archive_extraction.parse_audit_output(
+        '```json\n{"violations": [{"type": "REDLINE_BREACH", "detail": "越线"}]}\n```'
+    )
+    assert violations == [{"type": "REDLINE_BREACH", "entity": None, "detail": "越线"}]
+
+
 def test_apply_output_merges_ledger_delta(tmp_path) -> None:
     db = _db(tmp_path)
     archive.upsert_entity(db, "w1", "杨凌")

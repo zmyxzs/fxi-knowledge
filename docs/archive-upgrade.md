@@ -104,10 +104,23 @@ anchor=[反派A]背着手踱步，冷笑道：“习武贵在意志，你这姿�
 
 9/9 通过；测试作品已清理。
 
-## 尚未实现（下一里程碑）
+## 语义审校与阴谋格式化（已实现）
 
-1. `hard_rules` / 红线的语义冲突检查（当前只做死亡与账本确定性校验）
-2. 未揭穿阴谋的自动格式化（`[反派表象 + 主角认知盲区锁]`）
+- `POST /api/audit` 支持 `llm: true`：把正文、`hard_rules`、当前快照和红线交给模型，返回 `HARD_RULE_CONFLICT` / `REDLINE_BREACH` / `DEAD_CHARACTER_ACTIVE` / `LEDGER_ERROR`，并与确定性检查合并去重
+- 红线通过 `POST /api/story_record` 写入：`{"category":"redline","payload":{"text":"主角不能杀人"}}`
+- `compile_archive` 的模块八把未揭穿伏笔格式化为：`[反派表象行为：…；主角认知盲区锁：…]`
+
+实测：
+
+```text
+HARD_RULE_CONFLICT: 正文称马东为“青云山掌门”，与硬设定“铁掌武馆副馆主”冲突
+HARD_RULE_CONFLICT: 正文称马东“性格豪爽大方”，与硬设定“笑面虎”冲突
+REDLINE_BREACH: “杨凌一剑杀了马东”违反红线“主角不能杀人”
+
+[反派表象行为：马东训斥弟子；主角认知盲区锁：主角不知情]
+```
+
+已知限制：语义审校依赖 LLM 配置（未配置时 `llm:true` 返回 400）；红线目前用故事记录维护，没有独立管理界面。
 
 ## 使用示例
 

@@ -407,9 +407,50 @@ class KnowledgeServer:
         result["work"] = row["title"]
         return result
 
-    def audit_draft(self, work: str | None, text: str, chapter: int | None) -> dict:
+    def audit_draft(
+        self, work: str | None, text: str, chapter: int | None, *,
+        llm: bool = False,
+    ) -> dict:
         row = self.resolve_work(work)
-        return archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
+        report = archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
+        if not llm:
+            return report
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            raise ValueError("LLM audit is not configured")
+        entities = []
+        for entity in archive.list_entities(self.db, row["id"], include_inactive=True):
+            snapshot = archive.get_snapshot(
+                self.db, row["id"], entity["canonical_name"], at_chapter=chapter,
+            )
+            entities.append({
+                **entity,
+                "dynamic_state": snapshot["dynamic_state"] if snapshot else {},
+                "lifecycle_status": (
+                    snapshot["lifecycle_status"] if snapshot
+                    else entity.get("lifecycle_status")
+                ),
+            })
+        redlines = [
+            str(record["payload"].get("text") or record["payload"].get("rule") or "")
+            for record in archive.list_story_records(
+                self.db, row["id"], category="redline",
+            )
+            if record["payload"].get("text") or record["payload"].get("rule")
+        ]
+        violations = asyncio.run(archive_extraction.audit_with_openai(
+            text, entities, redlines, chapter or 0,
+            base_url=self.llm_base_url,
+            api_key=self.llm_api_key,
+            model=self.llm_model,
+        ))
+        seen = {(item["type"], item["detail"]) for item in report["violations"]}
+        for violation in violations:
+            key = (violation["type"], violation["detail"])
+            if key not in seen:
+                report["violations"].append(violation)
+                seen.add(key)
+        report["passed"] = not report["violations"]
+        return report
 
     def add_story_record(self, work: str | None, body: dict) -> dict:
         row = self.resolve_work(work)
@@ -955,6 +996,7 @@ def handler_for(server: KnowledgeServer):
                     self._json(server.audit_draft(
                         body.get("work"), text,
                         int(chapter) if chapter is not None else None,
+                        llm=bool(body.get("llm")),
                     ))
                     return
                 if method == "POST" and parts == ["api", "parse"]:
