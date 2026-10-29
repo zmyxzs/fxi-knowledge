@@ -521,6 +521,10 @@ class KnowledgeQueryServiceMixin:
             terms = []
         cache[key] = register_entity_terms(terms)
 
+    def rebuild_source_chunk_fts(self, source_id: str) -> int:
+        """Re-tokenize a published source's chunks with the current entity terms."""
+        return self.repository.rebuild_source_chunk_fts(source_id)
+
     async def search_planned(
         self,
         queries: list[str],

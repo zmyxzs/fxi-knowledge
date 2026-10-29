@@ -205,6 +205,8 @@ jieba `HMM=False` 会把「杨凌」「韩萧」切成单字，BM25 只能靠单
 2. `scripts/rebuild_entity_fts.py` 用同一词典重建 `chunk_fts`；
 3. `search_lexical` 先跑精确短语查询，再用 OR 查询补足，短语命中优先。
 
+发布阶段现在会自动重建该来源的 chunk FTS；已有库仍可用脚本一次性重建。
+
 实测（双作品库）：
 
 | 查询 | 重建前 | 重建后 |

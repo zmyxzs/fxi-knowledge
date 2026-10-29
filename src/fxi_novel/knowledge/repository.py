@@ -3,6 +3,7 @@
 import json
 
 from .repository_support import *
+from .tokenizer import fts_document, register_entity_terms
 from .repository_projects import KnowledgeProjectRepositoryMixin
 from .repository_folders import KnowledgeFolderRepositoryMixin
 from .repository_source_imports import KnowledgeSourceImportRepositoryMixin
@@ -145,3 +146,32 @@ class KnowledgeRepository(
                     if isinstance(alias, str) and alias.strip()
                 )
         return list(dict.fromkeys(terms))
+
+    def rebuild_source_chunk_fts(self, source_id: str) -> int:
+        """Re-tokenize one source's current chunks after entity names are known."""
+        with self.database.connection() as connection:
+            source = connection.execute(
+                "SELECT space, work_id FROM source WHERE id = ?", (source_id,),
+            ).fetchone()
+            if source is None:
+                return 0
+            chunks = connection.execute(
+                """
+                SELECT chunk.id, chunk.text
+                FROM chunk
+                JOIN source_current_snapshot AS current
+                  ON current.snapshot_id = chunk.snapshot_id
+                WHERE current.source_id = ?
+                """,
+                (source_id,),
+            ).fetchall()
+        register_entity_terms(
+            self.list_graph_entity_terms(str(source["space"]), source["work_id"])
+        )
+        with self.database.transaction() as connection:
+            for chunk in chunks:
+                connection.execute(
+                    "UPDATE chunk_fts SET tokenized_text = ? WHERE chunk_id = ?",
+                    (fts_document(str(chunk["text"] or "")), chunk["id"]),
+                )
+        return len(chunks)

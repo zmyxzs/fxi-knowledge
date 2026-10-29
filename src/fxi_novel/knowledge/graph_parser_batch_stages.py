@@ -912,6 +912,10 @@ class KnowledgeGraphParseBatchStagesMixin:
                     item["stage_revision"] += 1
                     item["stages"]["publish"].update(status="completed", result=result)
                 await enqueue_published_component_embeddings(self.knowledge, batch, component)
+                for source_id in sorted({str(item["source_id"]) for item in component}):
+                    await asyncio.to_thread(
+                        self.knowledge.rebuild_source_chunk_fts, source_id,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -992,6 +996,12 @@ class KnowledgeGraphParseBatchStagesMixin:
                         await enqueue_published_component_embeddings(
                             self.knowledge, batch, completed_items,
                         )
+                        for source_id in sorted({
+                            str(row["source_id"]) for row in completed_items
+                        }):
+                            await asyncio.to_thread(
+                                self.knowledge.rebuild_source_chunk_fts, source_id,
+                            )
                     continue
                 if superseded:
                     logger.info("knowledge parse batch %s publication was superseded", batch["batch_id"])
