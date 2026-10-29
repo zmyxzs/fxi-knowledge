@@ -31,7 +31,9 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | POST | `/api/parse` | `{"work":"作品名","source_ids":["..."]}`（省略则全部来源）→ 202 任务 |
 | GET | `/api/parse/{job_id}` | 任务状态与阶段摘要 |
 | `/docs` | 浏览器可读的 API 文档 |
-| `/api/openapi.json` | OpenAPI 文档（仓库里另有 `docs/openapi.yaml`） |
+| `/swagger` | Swagger UI（加载 `/api/openapi.json`） |
+| `/api/openapi.json` | OpenAPI 文档（JSON） |
+| `/api/openapi.yaml` | OpenAPI 文档（YAML，仓库里另有 `docs/openapi.yaml`） |
 
 Python 调用示例（`examples/kb_client.py`）：
 

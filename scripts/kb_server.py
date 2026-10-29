@@ -61,6 +61,24 @@ f.onsubmit=async e=>{e.preventDefault();out.innerHTML='';st.textContent='搜索�
 </script></body></html>"""
 
 
+SWAGGER_HTML = """<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<title>知识库 API · Swagger</title>
+<link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css">
+</head><body>
+<div id="swagger-ui"></div>
+<script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+window.ui = SwaggerUIBundle({
+  url: "/api/openapi.json",
+  dom_id: "#swagger-ui",
+  deepLinking: true,
+  presets: [SwaggerUIBundle.presets.apis],
+});
+</script>
+</body></html>"""
+
+
 DOCS_HTML = """<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -75,7 +93,7 @@ DOCS_HTML = """<!doctype html>
  pre{background:#f8f9fa;padding:12px;border-radius:6px;overflow:auto}
 </style></head><body>
 <h2>知识库 API</h2>
-<p>读接口公开；写接口需要 <code>X-API-Key</code>。OpenAPI: <a href="/api/openapi.json">/api/openapi.json</a></p>
+<p>读接口公开；写接口需要 <code>X-API-Key</code>。OpenAPI: <a href="/api/openapi.json">/api/openapi.json</a> · <a href="/api/openapi.yaml">/api/openapi.yaml</a> · <a href="/swagger">Swagger UI</a></p>
 <table>
 <tr><th>方法</th><th>路径</th><th>说明</th></tr>
 <tr><td class="m">GET</td><td>/health</td><td>健康检查与作品列表</td></tr>
@@ -542,6 +560,26 @@ def handler_for(server: KnowledgeServer):
                     return
                 if parsed.path == "/api/openapi.json":
                     self._json(OPENAPI_SPEC)
+                    return
+                if parsed.path == "/swagger":
+                    body = SWAGGER_HTML.encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+                    return
+                if parsed.path == "/api/openapi.yaml":
+                    spec_path = Path(__file__).resolve().parents[1] / "docs" / "openapi.yaml"
+                    if not spec_path.is_file():
+                        self._json({"error": "openapi.yaml not found"}, 404)
+                        return
+                    body = spec_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/yaml; charset=utf-8")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
                     return
                 if parsed.path == "/health":
                     self._json({"status": "ok", "works": server.works()})
