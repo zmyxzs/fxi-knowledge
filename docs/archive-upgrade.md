@@ -67,11 +67,21 @@ chapter=1 entities=2 records=1
 
 `mode=deconstruct_extract` 目前返回 `not_implemented`。
 
+`mode=deconstruct_extract` 已实现：把章节还原为 6–8 步去名化剧情骨架和 200–350 字文风锚点，写入 `trope_skeleton` / `style_anchor` 故事记录。
+
+实测（拆书测试章）：
+
+```text
+steps=6  anchor_chars=119
+tags=打脸,扮猪吃虎,深藏不露,以弱胜强
+【剧情1】[反派A]背手踱步，以指导者姿态当众否定[主角]的姿势……
+anchor=[反派A]背着手踱步，冷笑道：“习武贵在意志，你这姿势错了。”[主角]没有争辩……
+```
+
 ## 尚未实现（下一里程碑）
 
-1. `deconstruct_extract` 拆书模式与 `trope_skeleton` / `style_anchor` 自动生成
-2. 1 度关系扩展召回、`[已死亡]` 标签在词法结果中的完整过滤
-3. 章节编辑（PUT）后的自动回滚（目前只有删除触发）
+1. 1 度关系扩展召回、`[已死亡]` 标签在词法结果中的完整过滤
+2. 章节编辑（PUT）后的自动回滚（目前只有删除触发）
 
 ## 使用示例
 

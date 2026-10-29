@@ -99,6 +99,109 @@ async def extract_with_openai(
     return parse_output(content)
 
 
+DECONSTRUCT_PROMPT = """你是爆款小说拆书器。把本章还原成去名化的剧情骨架和文风锚点。
+只输出 JSON：
+{
+  "trope_skeleton": {
+    "steps": ["【剧情1】...", "【剧情2】..."],
+    "conflict_tags": ["打脸", "扮猪吃虎"]
+  },
+  "style_anchor": {
+    "scene_tags": ["题材", "场景功能"],
+    "sanitized_text": "200~350字最具张力的原文片段，人名替换为[主角]/[反派A]/[配角B]，删除AI式微表情套话"
+  }
+}
+要求：
+- steps 6~8 步，覆盖本章完整事件链，只保留因果与冲突，不写章节名。
+- 所有人名、地名、门派名替换为占位符，不要保留真名。
+- style_anchor 必须逐字来自本章，只做去名化与套话删除，不改写情节。"""
+
+
+def build_deconstruct_messages(text: str, chapter_index: int) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": DECONSTRUCT_PROMPT},
+        {"role": "user", "content": json.dumps(
+            {"chapter_index": chapter_index, "chapter_text": text[:12000]},
+            ensure_ascii=False,
+        )},
+    ]
+
+
+def parse_deconstruct_output(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("deconstruct output must be an object")
+    skeleton = data.get("trope_skeleton")
+    if not isinstance(skeleton, dict) or not isinstance(skeleton.get("steps"), list):
+        raise ValueError("trope_skeleton.steps is required")
+    anchor = data.get("style_anchor")
+    if not isinstance(anchor, dict) or not str(anchor.get("sanitized_text") or "").strip():
+        raise ValueError("style_anchor.sanitized_text is required")
+    return data
+
+
+async def extract_deconstruct_with_openai(
+    text: str,
+    chapter_index: int,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 120.0,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": build_deconstruct_messages(text, chapter_index),
+                "temperature": 0,
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_deconstruct_output(content)
+
+
+def apply_deconstruct_output(
+    db: Any, work_id: str, chapter_index: int, output: dict,
+) -> dict:
+    from . import archive
+
+    skeleton = output["trope_skeleton"]
+    anchor = output["style_anchor"]
+    records = [
+        archive.add_story_record(
+            db, work_id, "trope_skeleton",
+            {
+                "steps": [str(step) for step in skeleton.get("steps") or []],
+                "conflict_tags": [str(tag) for tag in skeleton.get("conflict_tags") or []],
+            },
+            chapter_index=chapter_index,
+        ),
+        archive.add_story_record(
+            db, work_id, "style_anchor",
+            {
+                "scene_tags": [str(tag) for tag in anchor.get("scene_tags") or []],
+                "sanitized_text": str(anchor.get("sanitized_text") or ""),
+            },
+            chapter_index=chapter_index,
+        ),
+    ]
+    return {
+        "chapter_index": chapter_index,
+        "trope_steps": len(skeleton.get("steps") or []),
+        "style_anchor_chars": len(str(anchor.get("sanitized_text") or "")),
+        "story_records": records,
+    }
+
+
 def _merge_ledger(previous: dict, delta: dict) -> dict:
     ledger = json.loads(json.dumps(previous or {}))
     currency = ledger.setdefault("currency", {})

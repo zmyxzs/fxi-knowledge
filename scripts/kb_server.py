@@ -646,8 +646,6 @@ class KnowledgeServer:
     async def _run_archive_update(
         self, job_id: str, knowledge: Any, row: dict, ids: list[str], mode: str,
     ) -> dict:
-        if mode == "deconstruct_extract":
-            return {"status": "not_implemented", "mode": mode}
         if not (self.llm_base_url and self.llm_api_key and self.llm_model):
             return {"status": "skipped", "reason": "LLM is not configured"}
         chapters = []
@@ -668,16 +666,27 @@ class KnowledgeServer:
                     int(chapter) if chapter is not None
                     else archive.next_chapter_index(self.db, row["id"])
                 )
-                entities = archive.list_entities(self.db, row["id"])
-                output = await archive_extraction.extract_with_openai(
-                    text, entities, chapter_index,
-                    base_url=self.llm_base_url,
-                    api_key=self.llm_api_key,
-                    model=self.llm_model,
-                )
-                chapters.append(archive_extraction.apply_output(
-                    self.db, row["id"], chapter_index, output,
-                ))
+                if mode == "deconstruct_extract":
+                    output = await archive_extraction.extract_deconstruct_with_openai(
+                        text, chapter_index,
+                        base_url=self.llm_base_url,
+                        api_key=self.llm_api_key,
+                        model=self.llm_model,
+                    )
+                    chapters.append(archive_extraction.apply_deconstruct_output(
+                        self.db, row["id"], chapter_index, output,
+                    ))
+                else:
+                    entities = archive.list_entities(self.db, row["id"])
+                    output = await archive_extraction.extract_with_openai(
+                        text, entities, chapter_index,
+                        base_url=self.llm_base_url,
+                        api_key=self.llm_api_key,
+                        model=self.llm_model,
+                    )
+                    chapters.append(archive_extraction.apply_output(
+                        self.db, row["id"], chapter_index, output,
+                    ))
             return {"status": "completed", "mode": mode, "chapters": chapters}
         except Exception as exc:  # noqa: BLE001 - report archive failure on the job
             return {"status": "failed", "mode": mode, "error": f"{type(exc).__name__}: {exc}"}

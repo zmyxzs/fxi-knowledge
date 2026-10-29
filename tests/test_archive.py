@@ -74,6 +74,26 @@ def test_draft_audit_flags_dead_character(tmp_path) -> None:
     db.close()
 
 
+def test_apply_deconstruct_output_writes_skeleton_and_anchor(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_deconstruct_output(db, "w1", 1, {
+        "trope_skeleton": {
+            "steps": ["【剧情1】[反派A]立威", "【剧情2】[主角]反击"],
+            "conflict_tags": ["打脸"],
+        },
+        "style_anchor": {
+            "scene_tags": ["武侠", "对峙"],
+            "sanitized_text": "[反派A]背着手踱步。",
+        },
+    })
+    assert result["trope_steps"] == 2
+    skeleton = archive.list_story_records(db, "w1", category="trope_skeleton")
+    anchor = archive.list_story_records(db, "w1", category="style_anchor")
+    assert skeleton[0]["payload"]["conflict_tags"] == ["打脸"]
+    assert anchor[0]["payload"]["sanitized_text"] == "[反派A]背着手踱步。"
+    db.close()
+
+
 def test_apply_output_merges_ledger_delta(tmp_path) -> None:
     db = _db(tmp_path)
     archive.upsert_entity(db, "w1", "杨凌")
