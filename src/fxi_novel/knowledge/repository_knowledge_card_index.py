@@ -742,12 +742,15 @@ class KnowledgeCardIndexRepositoryMixin:
             )
             if include_reviewed else "v.content_json"
         )
-        category_sql = _knowledge_item_card_category_sql("i.kind", content_sql)
-        search_fields_sql = _knowledge_item_card_search_fields_sql(content_sql)
+        category_sql = _knowledge_item_card_category_sql("kind", "content")
+        search_fields_sql = _knowledge_item_card_search_fields_sql("content")
         graph_candidate_publication_filter = published_graph_candidate_filter(
             "i", include_reviewed_claims=include_reviewed,
             include_query_reviewed_claims=include_query_reviewed,
         )
+        # Compute the published content once in a subquery. SQLite 3.45 has a
+        # shallower expression-depth limit and overflows when the large
+        # json_remove CASE is repeated for every search field.
         connection.execute(
             f"""
             INSERT INTO knowledge_card_candidate(
@@ -756,22 +759,28 @@ class KnowledgeCardIndexRepositoryMixin:
                 identity_is_canonical, source_chapter_order, updated_at,
                 search_fields_json
             )
-            SELECT i.id, v.id,
-                   CASE WHEN i.work_id IS NULL THEN i.space || ':'
-                        ELSE i.space || ':' || i.work_id END,
-                   i.kind, ?, {category_sql},
-                   json_extract(v.content_json, '$.candidate_role'),
-                   COALESCE(json_extract({content_sql}, '$.identity_is_canonical'), 0),
-                   CAST(json_extract(v.content_json, '$.source_chapter_order') AS INTEGER),
-                   i.updated_at, {search_fields_sql}
-            FROM knowledge_item AS i
-            JOIN knowledge_version AS v ON v.id = ? AND v.item_id = i.id
-            WHERE i.id = ? AND i.status != 'deleted'
-              AND (i.kind != 'knowledge_graph_candidate' OR (
-                   i.status != 'rejected' AND {graph_candidate_publication_filter}
-                   AND v.id = i.published_graph_version_id
-              ))
-              AND i.kind NOT IN ('source_study', 'chapter_check')
+            SELECT item_id, version_id,
+                   CASE WHEN work_id IS NULL THEN space || ':'
+                        ELSE space || ':' || work_id END,
+                   kind, ?, {category_sql},
+                   json_extract(content, '$.candidate_role'),
+                   COALESCE(json_extract(content, '$.identity_is_canonical'), 0),
+                   CAST(json_extract(content, '$.source_chapter_order') AS INTEGER),
+                   updated_at, {search_fields_sql}
+            FROM (
+                SELECT i.id AS item_id, v.id AS version_id,
+                       i.space AS space, i.work_id AS work_id,
+                       i.kind AS kind, i.updated_at AS updated_at,
+                       {content_sql} AS content
+                FROM knowledge_item AS i
+                JOIN knowledge_version AS v ON v.id = ? AND v.item_id = i.id
+                WHERE i.id = ? AND i.status != 'deleted'
+                  AND (i.kind != 'knowledge_graph_candidate' OR (
+                       i.status != 'rejected' AND {graph_candidate_publication_filter}
+                       AND v.id = i.published_graph_version_id
+                  ))
+                  AND i.kind NOT IN ('source_study', 'chapter_check')
+            )
             """,
             (card_key, version_id, item_id),
         )

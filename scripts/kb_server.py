@@ -9,9 +9,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hmac
+import importlib.util
 import json
 import os
 import sys
+import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -20,8 +23,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fxi_novel.knowledge.consistency_audit import audit_work
 from fxi_novel.knowledge.consistency_review import adjudicate_entries_openai
+from fxi_novel.knowledge.event_reconciliation_service import EventVectorReconciliationService
+from fxi_novel.knowledge.graph_parser import KnowledgeGraphParseService
+from fxi_novel.knowledge.parse_stage_audit import KnowledgeParseStageAuditRunner
 from fxi_novel.knowledge.repository import KnowledgeRepository
 from fxi_novel.knowledge.service import KnowledgeService
+from fxi_novel.models.gateway import GatewayConfig, ModelGateway, ModelRoute
+from fxi_novel.project_paths import project_root
 from fxi_novel.storage.database import Database
 
 INDEX_HTML = """<!doctype html>
@@ -61,6 +69,7 @@ class KnowledgeServer:
         self.llm_base_url = os.environ.get("FXI_KB_LLM_BASE_URL") or None
         self.llm_api_key = os.environ.get("FXI_KB_LLM_API_KEY") or None
         self.llm_model = os.environ.get("FXI_KB_LLM_MODEL") or None
+        self.jobs: dict[str, dict] = {}
         self.db = Database(database)
         self.db.initialize()
         self.knowledge = KnowledgeService(
@@ -236,6 +245,100 @@ class KnowledgeServer:
             raise ValueError("source not found")
         return {"deleted": source_id}
 
+    def _llm_route(self) -> ModelRoute:
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            raise ValueError("LLM is not configured")
+        return ModelRoute(
+            enabled=True,
+            base_url=self.llm_base_url,
+            model=self.llm_model,
+            token_env="FXI_KB_LLM_API_KEY",
+            timeout_seconds=300,
+            reasoning_effort="none",
+            max_output_tokens=16000,
+        )
+
+    def _narrative_reader(self, work_id: str):
+        path = Path(__file__).resolve().parents[1] / "examples" / "writing_order_reader.py"
+        spec = importlib.util.spec_from_file_location("writing_order_reader", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.SourceOrderManifest(work_id=work_id, branch_id=self.branch)
+
+    def start_parse(self, work: str | None, source_ids: list[str] | None) -> dict:
+        row = self.resolve_work(work)
+        ids = list(source_ids) if source_ids else [
+            source["id"]
+            for source in self.knowledge.list_sources(
+                space=self.space, work_id=row["id"],
+            )
+        ]
+        if not ids:
+            raise ValueError("no sources to parse")
+        self._llm_route()
+        job_id = uuid.uuid4().hex
+        self.jobs[job_id] = {
+            "id": job_id, "status": "queued", "work": row["title"],
+            "sources": ids, "batch_id": None, "error": None, "summary": None,
+        }
+        threading.Thread(
+            target=self._parse_thread, args=(job_id, row, ids), daemon=True,
+        ).start()
+        return self.jobs[job_id]
+
+    def get_job(self, job_id: str) -> dict:
+        job = self.jobs.get(job_id)
+        if job is None:
+            raise ValueError("job not found")
+        return job
+
+    def _parse_thread(self, job_id: str, row: dict, ids: list[str]) -> None:
+        try:
+            asyncio.run(self._parse_async(job_id, row, ids))
+        except Exception as exc:  # noqa: BLE001 - surface to the job status
+            self.jobs[job_id].update(
+                status="failed", error=f"{type(exc).__name__}: {exc}",
+            )
+
+    async def _parse_async(self, job_id: str, row: dict, ids: list[str]) -> None:
+        db = Database(self.database)
+        db.initialize()
+        knowledge = KnowledgeService(
+            KnowledgeRepository(db, embedding_indexing_enabled=False)
+        )
+        knowledge.set_writing_narrative_order_reader(self._narrative_reader(row["id"]))
+        route = self._llm_route()
+        gateway = ModelGateway(GatewayConfig(chat=route, embedding=route))
+        prompts = project_root() / "prompts" / "learning"
+        audit = KnowledgeParseStageAuditRunner(knowledge, gateway)
+        event = EventVectorReconciliationService(
+            knowledge, gateway, prompts / "knowledge-event-reconciliation.md",
+            stage_audit_runner=audit,
+        )
+        parser = KnowledgeGraphParseService(
+            knowledge, gateway,
+            prompts / "knowledge-graph-parse.md",
+            prompts / "knowledge-graph-coverage-audit.md",
+            prompts / "knowledge-graph-identity-reconcile.md",
+            prompts / "knowledge-graph-semantic-review.md",
+            event_reconciliation=event, stage_audit_runner=audit,
+        )
+        batch = parser.enqueue_parse_batch(
+            space=self.space, work_id=row["id"], folder_id=None,
+            source_ids=ids, branch_id=self.branch, max_concurrency=1,
+            force_reparse=False,
+        )
+        self.jobs[job_id].update(status="running", batch_id=batch["batch_id"])
+        await parser.run_parse_batch(batch["batch_id"])
+        final = knowledge.get_knowledge_parse_batch(batch["batch_id"])
+        status = final.get("status") or "failed"
+        self.jobs[job_id].update(
+            status="completed" if status == "completed" else status,
+            summary=final.get("stage_summary"),
+        )
+        await gateway.aclose()
+        db.close()
+
 
 def handler_for(server: KnowledgeServer):
     class Handler(BaseHTTPRequestHandler):
@@ -296,6 +399,9 @@ def handler_for(server: KnowledgeServer):
                     llm = (params.get("llm") or "").lower() in {"1", "true", "yes"}
                     self._json(server.audit(params.get("work"), llm=llm))
                     return
+                if parsed.path.startswith("/api/parse/"):
+                    self._json(server.get_job(parsed.path.rsplit("/", 1)[-1]))
+                    return
                 self._json({"error": "not found"}, 404)
             except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
@@ -341,6 +447,17 @@ def handler_for(server: KnowledgeServer):
                         body.get("work"), str(body.get("title") or ""),
                         str(body.get("content") or ""),
                     ), 201)
+                    return
+                if method == "POST" and parts == ["api", "parse"]:
+                    ids = body.get("source_ids")
+                    if ids is not None and (
+                        not isinstance(ids, list)
+                        or any(not isinstance(item, str) for item in ids)
+                    ):
+                        raise ValueError("source_ids must be a list of strings")
+                    self._json(server.start_parse(
+                        body.get("work"), [str(item) for item in ids] if ids else None,
+                    ), 202)
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "works"]:
                     project_id = parts[2]

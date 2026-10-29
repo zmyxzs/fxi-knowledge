@@ -927,6 +927,12 @@ class KnowledgeProjectRepositoryMixin(KnowledgeProjectCountRepositoryMixin):
                 space=reference_space,
                 work_id=reference_work_id,
             )
+        _delete_by_values(
+            connection,
+            "knowledge_parse_unit_attempt",
+            "receipt_id",
+            (str(row["id"]) for row in receipt_rows),
+        )
         _delete_by_values(connection, "knowledge_parse_receipt", "source_id", actual_source_ids)
         if evidence_ids:
             evidence_placeholders = ", ".join("?" for _ in evidence_ids)

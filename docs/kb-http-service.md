@@ -28,8 +28,10 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | POST | `/api/sources` | `{"work":"作品名","title":"001 第一章","content":"正文"}` |
 | PUT | `/api/sources/{id}` | `{"title":"新标题","content":"新正文"}` |
 | DELETE | `/api/sources/{id}` | — |
+| POST | `/api/parse` | `{"work":"作品名","source_ids":["..."]}`（省略则全部来源）→ 202 任务 |
+| GET | `/api/parse/{job_id}` | 任务状态与阶段摘要 |
 
-上传章节只做导入和分块；**解析**仍需要单独跑解析批（模型调用不在这个 HTTP 服务里）。
+上传章节只做导入和分块；解析通过 `/api/parse` 异步执行，使用 `FXI_KB_LLM_*` 配置的 OpenAI 兼容端点。单章通常 30–60 秒，任务状态在内存中保存（服务重启后丢失）。
 
 ## 鉴权
 
