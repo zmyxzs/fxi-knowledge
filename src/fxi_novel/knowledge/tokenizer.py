@@ -6,12 +6,15 @@ import unicodedata
 import jieba
 
 _REGISTERED_TERMS: set[str] = set()
+_TERM_COMPONENTS: dict[str, tuple[str, ...]] = {}
 
 
 def register_entity_terms(terms) -> int:
     """Teach jieba the project's entity names so OOV names stay one token.
 
     Indexing and querying share this path; call it before either side runs.
+    Multi-character components are remembered so a partial query such as
+    "风神" still matches "风神金刚腿" after the full name becomes one token.
     """
     added = 0
     for term in terms:
@@ -20,8 +23,14 @@ def register_entity_terms(terms) -> int:
         value = term.strip()
         if len(value) < 2 or value in _REGISTERED_TERMS:
             continue
+        components = tuple(dict.fromkeys(
+            token.strip() for token in jieba.cut(value, cut_all=False, HMM=False)
+            if len(token.strip()) >= 2 and token.strip() != value
+        ))
         jieba.add_word(value)
         _REGISTERED_TERMS.add(value)
+        if components:
+            _TERM_COMPONENTS[value] = components
         added += 1
     return added
 
@@ -44,8 +53,19 @@ def tokenize_chinese(text: str) -> list[str]:
 
 
 def fts_document(text: str) -> str:
-    """Return the normalized, space-delimited terms stored in the FTS projection."""
-    return " ".join(tokenize_chinese(text))
+    """Return the normalized terms stored in the FTS projection.
+
+    Registered names also contribute their multi-character components, so a
+    partial query such as "风神" still matches "风神金刚腿" without adding
+    single characters (which would break exact phrase filters).
+    """
+    terms = tokenize_chinese(text)
+    components = [
+        component
+        for term in terms
+        for component in _TERM_COMPONENTS.get(term, ())
+    ]
+    return " ".join(dict.fromkeys([*terms, *components]))
 
 
 def fts_documents(texts: list[str], *, batch_size: int = 128) -> list[str]:
@@ -90,6 +110,18 @@ def fts_phrase_query(text: str) -> str:
         return ""
     phrase = " ".join(term.replace('"', '""') for term in terms)
     return f'"{phrase}"'
+
+
+def fts_character_query(text: str) -> str:
+    """Character-level OR fallback for indexes built before entity registration."""
+    characters = [
+        character for character in text
+        if "\u4e00" <= character <= "\u9fff"
+    ]
+    return " OR ".join(
+        '"' + character.replace('"', '""') + '"'
+        for character in dict.fromkeys(characters)
+    )
 
 
 def fts_phrase_group_query(text: str) -> str:

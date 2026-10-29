@@ -3,6 +3,7 @@
 import json
 
 from .repository_support import *
+from .tokenizer import fts_character_query
 from .scope_selection import current_version_evidence_filter
 from .source_edit_conflict import SourceEditConflict
 from .source_record_history import record_source_state
@@ -848,6 +849,14 @@ class KnowledgeSourceContentRepositoryMixin:
             rows.append(row)
             if len(rows) >= top_k:
                 break
+        if not rows and not required_phrases and not required_texts:
+            # Existing databases may still carry the pre-registration index
+            # (single-character tokens). Fall back to a character OR so an
+            # entity-name query does not silently return nothing. Explicit
+            # phrase constraints must stay strict, so they skip this fallback.
+            legacy_expression = fts_character_query(query)
+            if legacy_expression:
+                rows = fetch_rows(legacy_expression, top_k)
 
         results: list[SearchResult] = []
         for rank, row in enumerate(rows, start=1):

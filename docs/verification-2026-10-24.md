@@ -203,7 +203,9 @@ jieba `HMM=False` 会把「杨凌」「韩萧」切成单字，BM25 只能靠单
 
 1. `search_planned` 首次进入某个 work 时，从知识库读取实体名/别名并 `jieba.add_word` 注册；
 2. `scripts/rebuild_entity_fts.py` 用同一词典重建 `chunk_fts`；
-3. `search_lexical` 先跑精确短语查询，再用 OR 查询补足，短语命中优先。
+3. `search_lexical` 先跑精确短语查询，再用 OR 查询补足，短语命中优先；
+4. 索引同时保存注册名的多字组件（如「风神金刚腿」→「风神」「金刚」），部分名查询仍然可召回；
+5. 旧索引没有注册名 token 时，`search_lexical` 在**没有显式短语约束**的情况下退回字符 OR，避免实体名查询静默返回 0 条。
 
 发布阶段现在会自动重建该来源的 chunk FTS；已有库仍可用脚本一次性重建。
 
