@@ -525,6 +525,87 @@ class KnowledgeQueryServiceMixin:
         """Re-tokenize a published source's chunks with the current entity terms."""
         return self.repository.rebuild_source_chunk_fts(source_id)
 
+    def query_entity_dossier(
+        self,
+        *,
+        space: str,
+        work_id: str | None,
+        entity: str,
+        branch: str | None = None,
+        page_size: int = 200,
+        max_records: int = 500,
+    ) -> dict[str, Any]:
+        """Collect one entity's facts, relations and events through its identity group.
+
+        This is the entity-first retrieval path: resolve the name to identity
+        groups, then read the structured projection instead of full-text search.
+        """
+        candidates = self.list_current_graph_identity_candidates(
+            space=space, work_id=work_id, folder_id=None, query=entity, limit=50,
+        )
+        groups = sorted({
+            str(row["content"].get("identity_group_id"))
+            for row in candidates.get("items", [])
+            if row.get("content", {}).get("identity_group_id")
+        })
+        records: dict[str, dict[str, Any]] = {}
+        for group_id in groups:
+            cursor = None
+            while len(records) < max_records:
+                page = self.query_story_knowledge(
+                    space=space, work_id=work_id, purpose="work_fact",
+                    branch=branch, identity_id=group_id,
+                    page_size=min(page_size, max_records - len(records)),
+                    cursor=cursor,
+                )
+                for row in page["items"]:
+                    item_id = str(
+                        row.get("candidate_item_id")
+                        or row.get("item_id")
+                        or row.get("id")
+                        or ""
+                    )
+                    if item_id:
+                        records.setdefault(item_id, row)
+                cursor = page.get("next_cursor")
+                if not cursor:
+                    break
+        rows = list(records.values())
+        counts: dict[str, int] = {}
+        for row in rows:
+            category = str(row.get("category") or "other")
+            counts[category] = counts.get(category, 0) + 1
+        relations = [
+            {
+                "predicate": row.get("predicate"),
+                "value": row.get("value"),
+                "target": row.get("target_entity_name") or row.get("target_identity_display_name"),
+                "assessment": (row.get("semantic_assessment") or {}).get("assessment")
+                if isinstance(row.get("semantic_assessment"), dict) else row.get("semantic_assessment"),
+            }
+            for row in rows
+            if row.get("category") == "relationship"
+        ]
+        events = [
+            {
+                "event": row.get("value") or row.get("predicate"),
+                "time": row.get("story_time_expression"),
+                "assessment": (row.get("semantic_assessment") or {}).get("assessment")
+                if isinstance(row.get("semantic_assessment"), dict) else row.get("semantic_assessment"),
+            }
+            for row in rows
+            if row.get("category") == "event"
+        ]
+        return {
+            "entity": entity,
+            "identity_groups": groups,
+            "counts": counts,
+            "total": len(rows),
+            "relations": relations,
+            "events": events,
+            "records": rows,
+        }
+
     async def search_planned(
         self,
         queries: list[str],

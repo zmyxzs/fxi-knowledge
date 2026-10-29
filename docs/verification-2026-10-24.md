@@ -216,6 +216,19 @@ jieba `HMM=False` 会把「杨凌」「韩萧」切成单字，BM25 只能靠单
 | 韩萧 | 0 命中 | 3 命中，首条机械系属性 |
 | 瓦尔基里 | 3 条（噪声） | 3 条，首条「瓦尔基里溶液 · 致死率 · 70%」卡片 |
 
+### 实体中心检索（GraphRAG local search 最小版）
+
+新增 `query_entity_dossier(space, work_id, entity, branch=...)`：把实体名解析到身份组，再直接读取结构化投影，不经过全文检索。
+
+```python
+dossier = knowledge.query_entity_dossier(
+    space="writing", work_id=work_id, entity="杨凌", branch="main",
+)
+# dossier["counts"] / ["relations"] / ["events"] / ["records"]
+```
+
+实测：杨凌 209 条（attribute 62、claim 77、temporal_state 32、relationship 10…）；韩萧跨 2 个身份组共 68 条。适合“这个角色有哪些属性/关系/事件”这类实体清单问题。
+
 ### 时间线过滤改为 fail-closed
 
 独立项目没有持久化的 writing narrative manifest，`writing_narrative_order_*` 三张表始终为空；此前请求数字型 `narrative_position` / `story_position` 会静默返回**未过滤**结果（search）或 0 条（story），容易让调用方误以为已按时间线截断。现在两种查询都会抛 `ValueError`，要求改用 `reader_position`（精确 source + codepoint 截断）或接入真实 manifest。
