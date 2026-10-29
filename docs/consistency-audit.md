@@ -31,6 +31,30 @@ curl 'https://kg.zmteams.site/api/audit?work=神域囚徒'
 4. **跨章不同值** → `state_changes`（视为成长/变化，不报冲突）
 5. 非数值但较短（≤12 字）→ `needs_review`
 
+## LLM 复核 `needs_review`
+
+确定性规则只做分类，不判断语义。对 `needs_review` 可以逐条让模型裁决：
+
+```powershell
+python scripts/adjudicate_consistency.py data/verify.sqlite3 --work 神域囚徒 \
+  --models D:/Projects/Fxi-novel/config/models.toml
+```
+
+每条输出 `verdict` + `reason`：
+
+| verdict | 含义 |
+|---|---|
+| `conflict` | 同一时点/状态下真矛盾 |
+| `change` | 随时间或阶段正常变化 |
+| `different` | 不同对象、不同技能或不同计量口径 |
+| `insufficient` | 证据不足或模型失败 |
+
+10 章实测：
+
+- 杨凌 · 精神力 → `change`（都是 200 点，仅表述差异）
+- 杨凌 · 修为 → `different`（境界 vs 进度描述）
+- 杨凌 · 身份 → `different`（职业定位 vs 宗门职务）
+
 ## 10 章实测
 
 734 条已发布记录：

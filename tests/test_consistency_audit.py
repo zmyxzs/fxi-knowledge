@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fxi_novel.knowledge.consistency_audit import audit_records
+from fxi_novel.knowledge.consistency_review import parse_verdict
 
 
 def _fact(group: str, predicate: str, value: str, chapter: str = "001 测试章") -> dict:
@@ -71,3 +72,15 @@ def test_category_mismatch_and_dangling_target() -> None:
         {"group": "g1", "categories": ["character", "organization"]},
     ]
     assert report["dangling_targets"][0]["target_group"] == "missing"
+
+
+def test_parse_verdict_accepts_fenced_json() -> None:
+    verdict = parse_verdict('```json\n{"verdict":"change","reason":"数值成长"}\n```')
+    assert verdict == {"verdict": "change", "reason": "数值成长"}
+
+
+def test_parse_verdict_rejects_unknown_verdict() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="invalid verdict"):
+        parse_verdict('{"verdict":"maybe","reason":"?"}')
