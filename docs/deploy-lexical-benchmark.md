@@ -101,13 +101,33 @@ scp -i $key ubuntu@43.155.187.124:/opt/fxi-bench/data/benchmark-server.json data
 ## 7. 清理
 
 ```bash
-rm -rf /opt/fxi-bench/data/db.zip
+rm -f ~/fxi-bench/data/bench-db.zip
 # 不再需要时
-rm -rf /opt/fxi-bench
+rm -rf ~/fxi-bench
 ```
+
+## 实测结果（2026-10-29）
+
+服务器：2 vCPU / 1.9 GB，Python 3.12.3，独立 venv，`nice -n 10`，数据库 10 章（ds7）。
+
+| 查询 | 命中 | 耗时 |
+|---|---:|---:|
+| 杨凌 | 5 | 1597 ms（冷启动） |
+| 风神金刚腿 | 5 | 130 ms |
+| 大品青龙劲 | 5 | 139 ms |
+| 提升身体数值的功法 | 5 | 148 ms |
+| 杨凌 等级 | 5 | 812 ms |
+
+- dossier 杨凌：209 条、1 个身份组
+- 最大 RSS：**183 MB**
+- 总耗时：**10.05 秒**（5 条查询 + 6 类计数 + dossier）
+- 无 swap，未影响 storyforge
+
+热查询实际比本机还快（0.13–0.15s），冷启动 1.6s。纯词法在这台 2C/2G 服务器上完全够用。
 
 ## 备注
 
 - 不需要 GPU、不需要 Ollama、不需要 embedding 服务
 - 如果服务器 Python 低于 3.11，用 `uv python install 3.11` 或 deadsnakes PPA
 - 数据库只读查询，跑基准不会修改业务库；重建 FTS 会写库，建议用副本
+- `/opt` 需要 root，普通用户用 `~/fxi-bench` 即可
