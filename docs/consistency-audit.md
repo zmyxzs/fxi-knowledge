@@ -11,6 +11,9 @@ python scripts/audit_consistency.py data/verify.sqlite3 --work 神域囚徒 --ou
 
 # 3. 或走 HTTP（kg 服务）
 curl 'https://kg.zmteams.site/api/audit?work=神域囚徒'
+
+# 4. HTTP 上同时做 LLM 复核
+curl 'https://kg.zmteams.site/api/audit?work=神域囚徒&llm=1'
 ```
 
 输出四类结果：

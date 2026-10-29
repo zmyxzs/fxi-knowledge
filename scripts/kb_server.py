@@ -19,6 +19,7 @@ from urllib.parse import parse_qs, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from fxi_novel.knowledge.consistency_audit import audit_work
+from fxi_novel.knowledge.consistency_review import adjudicate_entries_openai
 from fxi_novel.knowledge.repository import KnowledgeRepository
 from fxi_novel.knowledge.service import KnowledgeService
 from fxi_novel.storage.database import Database
@@ -57,6 +58,9 @@ class KnowledgeServer:
         self.space = space
         self.branch = branch
         self.api_key = os.environ.get("FXI_KB_API_KEY") or None
+        self.llm_base_url = os.environ.get("FXI_KB_LLM_BASE_URL") or None
+        self.llm_api_key = os.environ.get("FXI_KB_LLM_API_KEY") or None
+        self.llm_model = os.environ.get("FXI_KB_LLM_MODEL") or None
         self.db = Database(database)
         self.db.initialize()
         self.knowledge = KnowledgeService(
@@ -147,10 +151,19 @@ class KnowledgeServer:
             "events": dossier["events"][:50],
         }
 
-    def audit(self, work: str | None) -> dict:
+    def audit(self, work: str | None, *, llm: bool = False) -> dict:
         row = self.resolve_work(work)
         report = audit_work(self.db, row["id"])
         report["work"] = row["title"]
+        if llm:
+            if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+                raise ValueError("LLM adjudication is not configured")
+            report["needs_review"] = asyncio.run(adjudicate_entries_openai(
+                report["needs_review"],
+                base_url=self.llm_base_url,
+                api_key=self.llm_api_key,
+                model=self.llm_model,
+            ))
         return report
 
     def list_sources(self, work: str | None) -> dict:
@@ -280,7 +293,8 @@ def handler_for(server: KnowledgeServer):
                     self._json(server.list_sources(params.get("work")))
                     return
                 if parsed.path == "/api/audit":
-                    self._json(server.audit(params.get("work")))
+                    llm = (params.get("llm") or "").lower() in {"1", "true", "yes"}
+                    self._json(server.audit(params.get("work"), llm=llm))
                     return
                 self._json({"error": "not found"}, 404)
             except ValueError as exc:

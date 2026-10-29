@@ -16,6 +16,7 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 | `/api/story?work=神域囚徒&category=relationship&page_size=20` | 结构化故事记录 |
 | `/api/entity?name=杨凌&work=神域囚徒` | 实体 dossier（身份组、计数、关系、事件） |
 | `/api/audit?work=神域囚徒` | 设定一致性检查（同章冲突、跨章变化、待复核、类别/悬空引用） |
+| `/api/audit?work=神域囚徒&llm=1` | 额外用 LLM 复核 `needs_review`（需要 LLM 环境变量） |
 
 ### 写（需要 `X-API-Key`）
 
@@ -38,6 +39,16 @@ HTTP 服务：读接口公开，写接口需要一个 API key。检索、故事�
 - 已设置：写接口要求请求头 `X-API-Key` 与它一致，否则 401
 
 服务器上的 key 放在 `/home/ubuntu/fxi-bench/.env`（权限 600），systemd 通过 `EnvironmentFile` 注入。
+
+LLM 复核（`/api/audit?llm=1`）另需三个变量，指向任意 OpenAI 兼容端点：
+
+```ini
+FXI_KB_LLM_BASE_URL=https://wd.zmteams.site/v1
+FXI_KB_LLM_API_KEY=sk-...
+FXI_KB_LLM_MODEL=global:deepseek-v4.1-flash
+```
+
+未配置时 `llm=1` 返回 400；普通 `/api/audit` 不受影响。
 
 ```bash
 curl -X POST https://kg.zmteams.site/api/works \
