@@ -2,6 +2,8 @@
 
 从 `D:\Projects\Fxi-novel` 抽出的**独立知识库项目**，用于和写作系统并行开发、对比效果。
 
+**使用文档**：[知识库系统使用文档](docs/knowledge-base-guide.md) · [API 速查](docs/api-usage.md) · [Swagger](https://kg.zmteams.site/swagger)
+
 - 抽取时间：2026-10-23
 - 来源：`D:\Projects\Fxi-novel` 工作区（含未提交改动）在抽取时的状态
 - 原则：**只读复制，不改动原项目**；原项目的任何文件都没有被修改或移动
@@ -20,7 +22,7 @@
 | `prompts/` | 提示词文件（学习链路按路径读取） |
 | `config/writing_chains/` | `chain_versions` 读取的链版本配置 |
 | `examples/` | `smoke.py`（内存库冒烟）、`writing_order_reader.py`（独立运行写作空间解析用的 narrative-order reader） |
-| `docs/` | 验证记录、发布语义、xfail triage、迁移 squash、纯词法检索与部署基准 |
+| `docs/` | 使用文档、API 速查、档案层、验证记录、发布语义、xfail triage、迁移 squash、纯词法检索与部署基准 |
 | `scripts/` | 仓库本地工具（`dump_baseline_schema.py` 生成 baseline schema 草稿） |
 | `tests/` | 只依赖上述包的 180 个测试文件（1787 个用例） |
 
