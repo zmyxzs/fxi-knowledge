@@ -86,35 +86,37 @@
 ```json
 {
   "state_changes": [
-    {
-      "entity": "杨凌",
-      "kind": "resource",
-      "field": "灵石",
-      "from": "10",
-      "to": "7",
-      "evidence": "他花了三块灵石"
-    }
+    {"entity": "杨凌", "kind": "resource", "field": "灵石",
+     "direction": "decrease", "amount": 3, "evidence": "他花了三块灵石"},
+    {"entity": "杨凌", "kind": "debt", "creditor": "赵洵",
+     "direction": "increase", "amount": 5, "evidence": "欠赵洵五块灵石"},
+    {"entity": "杨凌", "kind": "item", "item": "灵剑",
+     "direction": "add", "quantity": 1, "evidence": "得到一柄灵剑"}
   ]
 }
 ```
 
-代码只做两件事：
+代码只做四件事：
 
-1. `dynamic.resources[field] = 数值`
-2. `dynamic.inventory_ledger.currency[field] = 数值`（兼容旧读取）
+1. `resources[field]` 有符号增减
+2. `debts[creditor]` 记录欠款
+3. `inventory[item]` 记录道具/资产数量
+4. `inventory_ledger.currency[field]` 兼容旧读取
 
-不再判断“这是不是货币”。
+不再判断“这是不是货币”，也不把负余额一律当错误。
 
 ### 3.3 审计
 
 ```text
 单位列表 = work_profile.resource_units
        或 账本/资源现有键
-支出模式 = 动词 + 数字 + 单位
-按单位分别比较余额
+支出超过余额：
+  allow_debt=false → LEDGER_ERROR
+  allow_debt=true  → 记为欠款，不报错
+道具移除超过持有 → ITEM_ERROR
 ```
 
-作品写“仙玉”“贡献点”“信用点”，都不需要改代码。
+作品写“仙玉”“贡献点”“信用点”“欠条”“灵剑”，都不需要改代码。
 
 ### 3.4 初稿审计：抽取与判定分离
 
@@ -125,10 +127,12 @@
   → memory 抽取（只抽取，不下结论）
   → state_changes: [{entity, kind, field, direction, amount, evidence}]
   → 代码对账
-       decrease 且 amount > 余额 → LEDGER_ERROR
-       set 为负数               → LEDGER_ERROR
-       evidence 不在正文        → EVIDENCE_MISMATCH
-       提到资源但没抽出变化     → NEEDS_REVIEW
+       resource decrease 超余额 → LEDGER_ERROR（allow_debt 时豁免）
+       resource set 为负         → LEDGER_ERROR（allow_debt 时豁免）
+       item remove 超过持有      → ITEM_ERROR
+       debt 变化                 → 只记录，不判负余额
+       evidence 不在正文         → EVIDENCE_MISMATCH
+       提到资源但没抽出变化      → NEEDS_REVIEW
 ```
 
 返回增加：
@@ -153,6 +157,7 @@
   "world_summary": "...",
   "protagonist_name": "杨凌",
   "resource_units": ["灵石", "贡献点"],
+  "allow_debt": false,
   "entity_types": ["character", "location", "item", "organization", "concept"],
   "story_categories": ["power_and_laws", "map", "faction", "active_storyline", "foreshadow"]
 }

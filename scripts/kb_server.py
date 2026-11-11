@@ -422,11 +422,14 @@ class KnowledgeServer:
             or any(not isinstance(entry, dict) for entry in glossary)
         ):
             raise ValueError("glossary must be a list of objects")
+        allow_debt = body.get("allow_debt")
+        if allow_debt is not None and not isinstance(allow_debt, bool):
+            raise ValueError("allow_debt must be a boolean")
         return {
             "work": row["title"],
             **archive.set_work_profile(
                 self.db, row["id"],
-                work_type=str(body.get("work_type") or "writing"),
+                work_type=body.get("work_type"),
                 genre=body.get("genre"),
                 world_summary=body.get("world_summary"),
                 protagonist_name=body.get("protagonist_name"),
@@ -435,6 +438,7 @@ class KnowledgeServer:
                 story_categories=lists["story_categories"],
                 archive_modules=modules,
                 glossary=glossary,
+                allow_debt=allow_debt,
             ),
         }
 

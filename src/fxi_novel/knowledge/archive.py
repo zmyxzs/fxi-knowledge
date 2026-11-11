@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     entity_types_json TEXT NOT NULL DEFAULT '["character","location","item","organization","concept"]',
     story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]',
     archive_modules_json TEXT NOT NULL DEFAULT '[]',
-    glossary_json TEXT NOT NULL DEFAULT '[]'
+    glossary_json TEXT NOT NULL DEFAULT '[]',
+    allow_debt INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS kb_work_type (
     work_type TEXT PRIMARY KEY,
@@ -115,6 +116,10 @@ def ensure_schema(db: Any) -> None:
         if "glossary_json" not in columns:
             connection.execute(
                 "ALTER TABLE kb_work_profile ADD COLUMN glossary_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "allow_debt" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN allow_debt INTEGER NOT NULL DEFAULT 0"
             )
     try:
         with db.transaction() as connection:
@@ -225,7 +230,7 @@ def set_work_profile(
     db: Any,
     work_id: str,
     *,
-    work_type: str = "writing",
+    work_type: str | None = None,
     genre: str | None = None,
     world_summary: str | None = None,
     protagonist_name: str | None = None,
@@ -234,12 +239,21 @@ def set_work_profile(
     story_categories: list[str] | None = None,
     archive_modules: list[dict] | None = None,
     glossary: list[dict] | None = None,
+    allow_debt: bool | None = None,
 ) -> dict:
+    existing = get_work_profile(db, work_id)
+    if work_type is None:
+        work_type = existing.get("work_type") or "writing"
     if get_work_type(db, work_type) is None:
         raise ValueError(
             f"unknown work_type: {work_type}; register it via /api/work_types first"
         )
-    existing = get_work_profile(db, work_id)
+    if genre is None:
+        genre = existing.get("genre")
+    if world_summary is None:
+        world_summary = existing.get("world_summary")
+    if protagonist_name is None:
+        protagonist_name = existing.get("protagonist_name")
     if resource_units is None:
         resource_units = existing.get("resource_units") or []
     if entity_types is None:
@@ -252,6 +266,8 @@ def set_work_profile(
         ]
     if glossary is None:
         glossary = existing.get("glossary") or []
+    if allow_debt is None:
+        allow_debt = bool(existing.get("allow_debt"))
 
     def clean(values: list[str]) -> list[str]:
         return list(dict.fromkeys(
@@ -264,9 +280,9 @@ def set_work_profile(
             INSERT INTO kb_work_profile(
                 work_id, work_type, genre, world_summary, protagonist_name,
                 resource_units_json, entity_types_json, story_categories_json,
-                archive_modules_json, glossary_json
+                archive_modules_json, glossary_json, allow_debt
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
@@ -275,7 +291,8 @@ def set_work_profile(
                 entity_types_json=excluded.entity_types_json,
                 story_categories_json=excluded.story_categories_json,
                 archive_modules_json=excluded.archive_modules_json,
-                glossary_json=excluded.glossary_json
+                glossary_json=excluded.glossary_json,
+                allow_debt=excluded.allow_debt
             """,
             (
                 work_id, work_type, genre, world_summary, protagonist_name,
@@ -284,6 +301,7 @@ def set_work_profile(
                 json.dumps(clean(story_categories), ensure_ascii=False),
                 json.dumps(_clean_modules(archive_modules), ensure_ascii=False),
                 json.dumps(_clean_glossary(glossary), ensure_ascii=False),
+                1 if allow_debt else 0,
             ),
         )
     return get_work_profile(db, work_id)
@@ -306,6 +324,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
             ],
             "archive_modules": [dict(module) for module in DEFAULT_ARCHIVE_MODULES],
             "glossary": [],
+            "allow_debt": False,
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
@@ -318,6 +337,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
         or [dict(module) for module in DEFAULT_ARCHIVE_MODULES]
     )
     profile["glossary"] = json.loads(profile.pop("glossary_json", "[]") or "[]")
+    profile["allow_debt"] = bool(profile.pop("allow_debt", 0))
     return profile
 
 
@@ -888,6 +908,10 @@ def _audit_structured_changes(
             **ledger.get("currency", {}),
         }.items()
     }
+    inventory = {
+        str(name): value for name, value in (dynamic.get("inventory") or {}).items()
+    }
+    allow_debt = bool(profile.get("allow_debt"))
     resource_changes = 0
     for change in changes:
         if not isinstance(change, dict):
@@ -899,7 +923,28 @@ def _audit_structured_changes(
                 "entity": change.get("entity"),
                 "detail": f"证据未在正文中逐字出现：{evidence[:40]}",
             })
-        if str(change.get("kind") or "") != "resource":
+        kind = str(change.get("kind") or "").strip()
+        if kind == "debt":
+            resource_changes += 1
+            continue
+        if kind == "item":
+            item = str(change.get("item") or change.get("field") or "").strip()
+            quantity = _parse_amount(str(
+                change.get("quantity") or change.get("amount") or "1"
+            ))
+            direction = str(change.get("direction") or "").strip()
+            current = inventory.get(item, 0)
+            if (
+                item and direction == "remove" and quantity is not None
+                and quantity > (current if isinstance(current, int) else 0)
+            ):
+                violations.append({
+                    "type": "ITEM_ERROR",
+                    "entity": change.get("entity"),
+                    "detail": f"{item} 移除 {quantity}，当前持有 {current}",
+                })
+            continue
+        if kind != "resource":
             continue
         resource_changes += 1
         field = str(change.get("field") or "").strip()
@@ -909,7 +954,9 @@ def _audit_structured_changes(
         amount = _parse_amount(str(change.get("amount") or ""))
         direction = str(change.get("direction") or "").strip()
         if amount is not None and direction == "decrease":
-            if amount > balance:
+            if amount > balance and not (
+                allow_debt or change.get("allow_debt") or change.get("debt")
+            ):
                 violations.append({
                     "type": "LEDGER_ERROR",
                     "entity": protagonist,
@@ -919,7 +966,7 @@ def _audit_structured_changes(
         if amount is not None and direction == "increase":
             continue
         if amount is not None and direction == "set":
-            if amount < 0:
+            if amount < 0 and not allow_debt:
                 violations.append({
                     "type": "LEDGER_ERROR",
                     "entity": protagonist,
@@ -934,7 +981,7 @@ def _audit_structured_changes(
                 "entity": protagonist,
                 "detail": f"{field} 起始 {start}，当前账面 {balance}",
             })
-        elif end is not None and end < 0:
+        elif end is not None and end < 0 and not allow_debt:
             violations.append({
                 "type": "LEDGER_ERROR",
                 "entity": protagonist,

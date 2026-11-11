@@ -204,7 +204,7 @@ print(client.audit("示例作品", llm=True))
 | GET | `/api/work_types` | 作品类型注册表 |
 | POST | `/api/work_types` | 注册类型 `{work_type, label, description}` |
 | GET | `/api/work_profile?work=` | 作品画像 |
-| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary}` |
+| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary, allow_debt}` |
 
 ### 4.3 章节
 
@@ -347,7 +347,7 @@ print(client.audit("示例作品", llm=True))
 ]}
 ```
 
-`type` 取值：`HARD_RULE_CONFLICT`、`REDLINE_BREACH`、`DEAD_CHARACTER_ACTIVE`、`LEDGER_ERROR`、`EVIDENCE_MISMATCH`、`NEEDS_REVIEW`。
+`type` 取值：`HARD_RULE_CONFLICT`、`REDLINE_BREACH`、`DEAD_CHARACTER_ACTIVE`、`LEDGER_ERROR`、`ITEM_ERROR`、`EVIDENCE_MISMATCH`、`NEEDS_REVIEW`。
 
 `llm=true` 时：
 

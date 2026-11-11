@@ -515,6 +515,82 @@ def test_structured_audit_flags_missing_resource_change(tmp_path) -> None:
     db.close()
 
 
+def test_structured_audit_allows_debt_when_enabled(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
+        allow_debt=True,
+    )
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"resources": {"灵石": 10}},
+    )
+    change = {
+        "entity": "杨凌", "kind": "resource", "field": "灵石",
+        "direction": "decrease", "amount": 12,
+        "evidence": "欠了两块灵石",
+    }
+    report = archive.audit_draft(
+        db, "w1", "杨凌欠了两块灵石。", chapter_index=1,
+        changes=[change], skip_ledger_scan=True,
+    )
+    assert report["passed"] is True
+    archive.set_work_profile(db, "w1", allow_debt=False)
+    report = archive.audit_draft(
+        db, "w1", "杨凌欠了两块灵石。", chapter_index=1,
+        changes=[change], skip_ledger_scan=True,
+    )
+    assert report["passed"] is False
+    db.close()
+
+
+def test_apply_memory_output_tracks_debts_and_items(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive_extraction.apply_memory_output(db, "w1", 1, {
+        "state_changes": [
+            {"entity": "杨凌", "kind": "resource", "field": "灵石",
+             "direction": "set", "amount": 10, "evidence": "十块灵石"},
+            {"entity": "杨凌", "kind": "debt", "creditor": "赵洵",
+             "direction": "increase", "amount": 5, "evidence": "欠赵洵五块灵石"},
+            {"entity": "杨凌", "kind": "item", "item": "灵剑",
+             "direction": "add", "quantity": 1, "evidence": "得到一柄灵剑"},
+        ],
+    })
+    archive_extraction.apply_memory_output(db, "w1", 2, {
+        "state_changes": [
+            {"entity": "杨凌", "kind": "item", "item": "灵剑",
+             "direction": "remove", "quantity": 1, "evidence": "灵剑碎了"},
+        ],
+    })
+    snapshot = archive.get_snapshot(db, "w1", "杨凌", at_chapter=2)
+    assert snapshot["dynamic_state"]["debts"]["赵洵"] == 5
+    assert snapshot["dynamic_state"]["inventory"]["灵剑"] == 0
+    db.close()
+
+
+def test_structured_audit_flags_item_shortage(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", protagonist_name="杨凌")
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"inventory": {"灵剑": 1}},
+    )
+    report = archive.audit_draft(
+        db, "w1", "杨凌取出两柄灵剑。", chapter_index=1,
+        changes=[{
+            "entity": "杨凌", "kind": "item", "item": "灵剑",
+            "direction": "remove", "quantity": 2,
+            "evidence": "两柄灵剑",
+        }],
+        skip_ledger_scan=True,
+    )
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "ITEM_ERROR"
+    db.close()
+
+
 def test_work_type_registry_and_custom_profile(tmp_path) -> None:
     db = _db(tmp_path)
     types = {row["work_type"] for row in archive.list_work_types(db)}

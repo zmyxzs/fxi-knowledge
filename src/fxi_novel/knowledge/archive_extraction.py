@@ -399,11 +399,11 @@ MEMORY_PROMPT = """你是小说记忆抽取器。只输出一个 JSON 对象，�
 格式：
 {"entities":[{"name":"标准名","type":"__ENTITY_TYPES__","aliases":[]}],
  "facts":[{"entity":"实体名","field":"属性","value":"值","evidence":"原文短句"}],
- "state_changes":[{"entity":"实体名","kind":"resource|state","field":"字段或资源名","direction":"increase|decrease|set","amount":12,"from":"旧值","to":"新值","evidence":"原文短句"}],
+ "state_changes":[{"entity":"实体名","kind":"resource|item|debt|state","field":"字段或资源名","direction":"increase|decrease|set|add|remove","amount":12,"quantity":1,"item":"物品名","creditor":"债主或对象","from":"旧值","to":"新值","evidence":"原文短句"}],
  "scenes":[{"summary":"一段完整因果","participants":["实体名"],"evidence":"原文短句"}],
  "threads":[{"name":"线程名","transition":"new|advanced|blocked|resolved","evidence":"原文短句"}],
  "records":[{"category":"__STORY_CATEGORIES__","payload":{}}]}
-规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；资源变化必须给出 direction（increase/decrease/set）和 amount（纯数字，不带单位）；threads 只写跨章仍有影响的问题；records.category 必须是给定分类之一；没有就空数组。"""
+规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；资源变化用 kind=resource，给出 direction（increase/decrease/set）和 amount（纯数字）；物品变化用 kind=item，给出 item、direction（add/remove/set）和 quantity；欠款用 kind=debt，给出 creditor 和 amount；普通状态用 kind=state；threads 只写跨章仍有影响的问题；records.category 必须是给定分类之一；没有就空数组。"""
 
 
 def build_memory_messages(
@@ -530,40 +530,75 @@ def apply_memory_output(
         field = str(change.get("field") or "").strip()
         value = change.get("to")
         kind = str(change.get("kind") or "").strip()
-        if field:
-            if value is not None:
-                dynamic[field] = value
-            if kind == "resource":
-                amount = _ledger_number(change.get("amount"))
-                direction = str(change.get("direction") or "").strip()
-                resources = dict(dynamic.get("resources") or {})
-                ledger = dict(dynamic.get("inventory_ledger") or {})
-                currency = dict(ledger.get("currency") or {})
-                current = resources.get(field, currency.get(field))
-                final: int | None = None
-                if amount is not None and direction in {"increase", "decrease", "set"}:
-                    if direction == "set":
-                        final = amount
-                    elif isinstance(current, int):
-                        final = (
-                            current + amount
-                            if direction == "increase"
-                            else current - amount
-                        )
-                    else:
-                        deltas = dict(dynamic.get("resource_deltas") or {})
-                        deltas[field] = amount if direction == "increase" else -amount
-                        dynamic["resource_deltas"] = deltas
+        item = str(change.get("item") or "").strip()
+        if field and value is not None:
+            dynamic[field] = value
+        if kind == "resource" and field:
+            amount = _ledger_number(change.get("amount"))
+            direction = str(change.get("direction") or "").strip()
+            resources = dict(dynamic.get("resources") or {})
+            ledger = dict(dynamic.get("inventory_ledger") or {})
+            currency = dict(ledger.get("currency") or {})
+            current = resources.get(field, currency.get(field))
+            final: int | None = None
+            if amount is not None and direction in {"increase", "decrease", "set"}:
+                if direction == "set":
+                    final = amount
+                elif isinstance(current, int):
+                    final = (
+                        current + amount
+                        if direction == "increase"
+                        else current - amount
+                    )
                 else:
-                    final = _ledger_number(value)
-                if final is not None:
-                    resources[field] = final
-                    dynamic["resources"] = resources
-                    currency[field] = final
-                    ledger["currency"] = currency
-                    dynamic["inventory_ledger"] = ledger
-                    if value is None:
-                        dynamic[field] = str(final)
+                    deltas = dict(dynamic.get("resource_deltas") or {})
+                    deltas[field] = amount if direction == "increase" else -amount
+                    dynamic["resource_deltas"] = deltas
+            else:
+                final = _ledger_number(value)
+            if final is not None:
+                resources[field] = final
+                dynamic["resources"] = resources
+                currency[field] = final
+                ledger["currency"] = currency
+                dynamic["inventory_ledger"] = ledger
+                if value is None:
+                    dynamic[field] = str(final)
+        elif kind == "debt":
+            amount = _ledger_number(change.get("amount"))
+            direction = str(change.get("direction") or "").strip()
+            key = str(change.get("creditor") or field or "unknown")
+            debts = dict(dynamic.get("debts") or {})
+            current = debts.get(key)
+            final: int | None = None
+            if amount is not None and direction in {"increase", "decrease", "set"}:
+                if direction == "set":
+                    final = amount
+                elif direction == "increase":
+                    final = (current if isinstance(current, int) else 0) + amount
+                else:
+                    final = max(0, (current if isinstance(current, int) else 0) - amount)
+            if final is not None:
+                debts[key] = final
+                dynamic["debts"] = debts
+                if not field:
+                    dynamic["debt"] = final
+        elif kind == "item" and item:
+            quantity = _ledger_number(change.get("quantity"))
+            if quantity is None:
+                quantity = _ledger_number(change.get("amount"))
+            if quantity is None:
+                quantity = 1
+            direction = str(change.get("direction") or "").strip()
+            inventory = dict(dynamic.get("inventory") or {})
+            current = inventory.get(item, 0)
+            if direction == "add":
+                inventory[item] = current + quantity
+            elif direction == "remove":
+                inventory[item] = max(0, current - quantity)
+            elif direction == "set":
+                inventory[item] = quantity
+            dynamic["inventory"] = inventory
         archive.write_snapshot(
             db, work_id, canonical, chapter_index,
             lifecycle_status=str(
@@ -575,7 +610,8 @@ def apply_memory_output(
         changes.append({
             "entity": canonical, "kind": kind, "field": field,
             "direction": str(change.get("direction") or ""),
-            "amount": change.get("amount"), "to": value,
+            "amount": change.get("amount"), "item": item,
+            "quantity": change.get("quantity"), "to": value,
         })
 
     facts = [
