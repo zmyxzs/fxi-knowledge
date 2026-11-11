@@ -149,3 +149,25 @@ D6、D9、D10、D13、D18、D19、D20、D22、D23、D24、D25、D29、D30、D31�
 - 缺少唯一约束和归属校验（章节号、别名、作品名）
 
 它们可以在不改架构的前提下修完；建议先修 P0 的 9 项，再进入章节记忆的实现。
+
+---
+
+## 7. 2026-11 系统复审
+
+完整扫描见 [`docs/kb-systemic-audit.md`](kb-systemic-audit.md)。
+
+新增缺陷：
+
+- **P0**：D39 两套真源、D40 混合模式账本冲突、D41 预审丢失硬规则/红线
+- **P1**：D42–D55（实体作用域、allow_debt、截断、债务/道具聚合、编译缺资产、分类不一致、无索引等）
+- **P2**：D56–D65（分页、OpenAPI、README、客户端、schema 版本、FTS 行为、jieba 全局等）
+
+根因不是模型，而是：
+
+1. 没有先定真源，archive 与 graph 两套都写
+2. memory/full parser/register/asset 四套 schema 各写各的
+3. 默认值在 schema、Python、server 三处重复
+4. 测试只测函数，不测跨入口一致性
+5. OpenAPI/README/客户端手工维护
+
+在 D39–D41 修完之前，不建议继续增加欠款/道具/关系字段。
