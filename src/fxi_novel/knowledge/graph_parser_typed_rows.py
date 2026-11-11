@@ -164,6 +164,32 @@ def normalize_source_local_event_quantity_links(
         return event_rows, quantity_rows
     events = [dict(row) if isinstance(row, dict) else row for row in event_rows]
     quantities = [dict(row) if isinstance(row, dict) else row for row in quantity_rows]
+
+    operation_aliases = {
+        "balance": "balance_snapshot",
+        "spend": "consume",
+        "spent": "consume",
+        "buy": "consume",
+        "purchase": "consume",
+        "gain": "acquire",
+        "obtain": "acquire",
+        "lose": "loss",
+        "lost": "loss",
+    }
+    for quantity in quantities:
+        if not isinstance(quantity, dict):
+            continue
+        operation = quantity.get("operation")
+        if isinstance(operation, str):
+            normalized = operation_aliases.get(operation.strip().lower())
+            if normalized is not None:
+                quantity["operation"] = normalized
+                if adjustments is not None:
+                    adjustments.append(
+                        f"normalized quantities[{quantity.get('ref')}].operation "
+                        f"{operation!r} -> {normalized!r}"
+                    )
+
     model_supplied_reverse_refs = {
         id(event)
         for event in events

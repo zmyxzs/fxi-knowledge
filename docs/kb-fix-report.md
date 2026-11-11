@@ -126,4 +126,28 @@ run5  status=partial  archive=skipped  54s
 3. 档案抽取质量：实体类型、空状态
 4. 并发查询性能（p95 仍高）
 
+---
+
+## 8. 第二轮语义修复尝试
+
+在 system 折叠之后，模型已能输出结构化 JSON，但仍卡在语义校验。追加了两项：
+
+1. **提示词**：资产事件最多一个 `event_ref` 数量；余额/剩余必须独立；`operation` 只用枚举（余额用 `balance_snapshot`）
+2. **重试提示**：校验错误涉及 quantity 时，追加同样的规则；`schema_version` 错误时提示必须是整数 4
+
+结果（干净作品、无 force）：
+
+```text
+status=partial  archive=skipped  36s
+err=初次抽取阶段 ... quantities[1]: event measurements cannot carry an asset reference；
+    events[0]: 模型输出的实体关联或原文证据校验未通过
+```
+
+说明：模型仍在 `quantities`/`events` 的互引与资产语义上出错。这不是服务端逻辑能完全兜底的，需要更强的模型或更小的抽取 schema。
+
+建议下一步二选一：
+
+- 换更强的模型跑解析（当前端点只有 `deepseek-v4.1-flash`）
+- 增加“轻量解析模式”：只抽实体/事实，不抽事件/数量，先让 `completed` 稳定
+
 下一步建议：针对 1 调整解析提示词/输出 schema，或换用更强的模型；在解析能稳定 `completed` 之前，不进入章节记忆层。

@@ -725,6 +725,16 @@ class ModelGateway:
                     )
                     rejected_outputs.append(exc)
                     if attempt == 0:
+                        hint = ""
+                        diagnostic_text = str(exc)
+                        if "quantity" in diagnostic_text or "quantities" in diagnostic_text or "数量" in diagnostic_text:
+                            hint = (
+                                " 资产事件最多一个 quantity 通过 event_ref 关联；"
+                                "余额/剩余/总计必须是独立数量，不填 event_ref、asset_ref 或 operation；"
+                                "operation 用 balance_snapshot 等枚举值。"
+                            )
+                        if "schema_version" in diagnostic_text:
+                            hint += " schema_version 必须是整数 4。"
                         attempt_messages = [
                             *messages,
                             {
@@ -733,6 +743,7 @@ class ModelGateway:
                                     "上一次响应未通过结构校验："
                                     f"{str(exc)[:300]}。"
                                     "请只输出符合要求的 JSON 对象，不要解释，也不要 Markdown 代码围栏。"
+                                    + hint
                                 ),
                             },
                         ]
