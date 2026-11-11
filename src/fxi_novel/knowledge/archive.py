@@ -742,7 +742,8 @@ def audit_draft(
             unit_pattern = "|".join(re.escape(unit) for unit in units)
             matches = re.findall(
                 rf"(?:花了|花费|花掉|支付|消耗|用掉|花去)"
-                rf"([零一二三四五六七八九十百千万两0-9]+)(?:两|枚|个)?({unit_pattern})",
+                rf"([零一二三四五六七八九十百千万两0-9]+)"
+                rf"[^\s，。；、0-9]{{0,2}}?({unit_pattern})",
                 text,
             )
             spend_by_unit: dict[str, int] = {}

@@ -288,6 +288,9 @@ def test_audit_uses_configured_resource_units(tmp_path) -> None:
     assert report["passed"] is False
     assert report["violations"][0]["type"] == "LEDGER_ERROR"
     assert "灵石" in report["violations"][0]["detail"]
+    report = archive.audit_draft(db, "w1", "他花了九块灵石买丹。", chapter_index=1)
+    assert report["passed"] is False
+    assert "灵石" in report["violations"][0]["detail"]
     db.close()
 
 
