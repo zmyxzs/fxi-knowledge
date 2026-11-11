@@ -721,12 +721,52 @@ def list_entities(
     return entities
 
 
+_STORY_DEDUPE_FIELDS = {
+    "fact": ("entity", "field", "value"),
+    "scene": ("name", "causal_paragraph"),
+    "cognition": ("holder", "type", "content"),
+    "thread": ("thread", "transition", "next_condition"),
+    "state_delta": ("category", "entity", "field", "to"),
+}
+
+
+def _story_record_key(
+    category: str, payload: dict, chapter_index: int | None,
+) -> str:
+    fields = _STORY_DEDUPE_FIELDS.get(category)
+    core = (
+        {key: payload.get(key) for key in fields}
+        if fields else payload
+    )
+    return json.dumps(
+        [chapter_index, category, core],
+        ensure_ascii=False, sort_keys=True, default=str,
+    )
+
+
 def add_story_record(
     db: Any, work_id: str, category: str, payload: dict,
     *, chapter_index: int | None = None,
 ) -> dict:
     record_id = uuid.uuid4().hex
+    key = _story_record_key(category, payload, chapter_index)
     with db.transaction() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, payload_json, chapter_index FROM kb_story_record
+            WHERE work_id=? AND category=?
+            """,
+            (work_id, category),
+        ).fetchall()
+        for row in rows:
+            if _story_record_key(
+                category, json.loads(row["payload_json"] or "{}"),
+                row["chapter_index"],
+            ) == key:
+                return {
+                    "id": row["id"], "category": category,
+                    "chapter_index": row["chapter_index"], "deduped": True,
+                }
         connection.execute(
             """
             INSERT INTO kb_story_record(id, work_id, chapter_index, category, payload_json, created_at)
@@ -736,6 +776,63 @@ def add_story_record(
              json.dumps(payload, ensure_ascii=False), _now()),
         )
     return {"id": record_id, "category": category, "chapter_index": chapter_index}
+
+
+def drop_legacy_chapter_records(db: Any, work_id: str) -> dict:
+    """Drop pre-artifact chapter records once an active chapter_memory exists."""
+    removed = 0
+    with db.transaction() as connection:
+        scopes = connection.execute(
+            """
+            SELECT scope_key FROM kb_document
+            WHERE work_id=? AND kind='chapter_memory' AND status='active'
+            """,
+            (work_id,),
+        ).fetchall()
+        for row in scopes:
+            match = re.match(r"chapter:(\d+)$", str(row["scope_key"] or ""))
+            if not match:
+                continue
+            removed += connection.execute(
+                """
+                DELETE FROM kb_story_record
+                WHERE work_id=? AND chapter_index=?
+                  AND category IN ('scene','cognition','thread','state_delta')
+                  AND json_extract(payload_json, '$.source_document_id') IS NULL
+                """,
+                (work_id, int(match.group(1))),
+            ).rowcount
+    return {"removed": removed}
+
+
+def dedupe_story_records(db: Any, work_id: str) -> dict:
+    removed = 0
+    with db.transaction() as connection:
+        rows = connection.execute(
+            """
+            SELECT id, category, chapter_index, payload_json
+            FROM kb_story_record WHERE work_id=?
+            ORDER BY chapter_index IS NULL, chapter_index, created_at, id
+            """,
+            (work_id,),
+        ).fetchall()
+        seen: set[str] = set()
+        duplicates: list[str] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"] or "{}")
+            key = _story_record_key(
+                row["category"], payload, row["chapter_index"],
+            )
+            if key in seen:
+                duplicates.append(row["id"])
+            else:
+                seen.add(key)
+        for record_id in duplicates:
+            connection.execute(
+                "DELETE FROM kb_story_record WHERE id=?", (record_id,),
+            )
+        removed = len(duplicates)
+    return {"removed": removed, "kept": len(rows) - removed}
 
 
 def purge_work(db: Any, work_id: str) -> dict:

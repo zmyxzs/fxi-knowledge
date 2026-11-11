@@ -154,7 +154,47 @@ state_delta 6
 
 ~~`GET /api/story?work=斗罗大陆·连续上传验证` 返回 0~~
 
-已统一：`/api/story` 只读 `kb_story_record`。斗罗返回 179 条，神域囚徒的 735 条 graph 记录已回填为 `fact` 记录。
+已统一：`/api/story` 只读 `kb_story_record`。斗罗返回 155 条，神域囚徒的 735 条 graph 记录已回填为 `fact` 记录。
+
+去重与旧记录清理：
+
+```text
+重复记录移除 14
+旧 memory 章节记录移除 10
+最终 155 条
+```
+
+分类：
+
+```text
+fact 89
+cognition 15
+scene 14
+thread 9
+state_delta 6
+active_storyline 4
+foreshadow 4
+map 3
+power_and_laws 3
+faction 3
+style_anchor 2
+trope_skeleton 2
+timer 1
+```
+
+分页：
+
+```text
+/api/story?work=...&page_size=100&offset=0
+→ total 155, next_offset 100
+```
+
+多作品不带 work：
+
+```text
+GET /api/story
+→ 400 work is required when multiple works exist
+```
 
 回填脚本：
 

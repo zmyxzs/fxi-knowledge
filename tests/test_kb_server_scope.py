@@ -126,6 +126,30 @@ def test_document_review_endpoint_and_update_rollback(tmp_path) -> None:
     assert document["status"] == "superseded"
 
 
+def test_story_paginates_and_requires_work_with_multiple_works(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("甲")
+    server.create_work("乙")
+    with pytest.raises(ValueError, match="work is required"):
+        server.story(None, None, 20)
+    work = server.resolve_work("甲")
+    for index in range(3):
+        archive.add_story_record(
+            server.db, work["id"], "fact",
+            {"entity": "唐三", "field": f"字段{index}", "value": index},
+            chapter_index=1,
+        )
+    first = server.story("甲", None, 2, 0)
+    assert first["total"] == 3
+    assert len(first["items"]) == 2
+    assert first["next_offset"] == 2
+    second = server.story("甲", None, 2, 2)
+    assert len(second["items"]) == 1
+    assert second["next_offset"] is None
+
+
 def test_story_prefers_archive_records(tmp_path) -> None:
     from fxi_novel.knowledge import archive
 

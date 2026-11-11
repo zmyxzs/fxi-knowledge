@@ -1061,6 +1061,46 @@ def test_document_fts_search_and_status_filter(tmp_path) -> None:
     db.close()
 
 
+def test_drop_legacy_chapter_records_keeps_artifact_projection(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"scenes": []},
+        status="active",
+    )
+    archive.add_story_record(
+        db, "w1", "scene", {"summary": "旧场景"}, chapter_index=1,
+    )
+    archive.add_story_record(
+        db, "w1", "scene",
+        {"name": "新场景", "causal_paragraph": "新因果", "source_document_id": "doc"},
+        chapter_index=1,
+    )
+    archive.add_story_record(
+        db, "w1", "fact", {"entity": "唐三", "field": "年龄", "value": "六岁"},
+        chapter_index=1,
+    )
+    result = archive.drop_legacy_chapter_records(db, "w1")
+    assert result["removed"] == 1
+    scenes = archive.list_story_records(db, "w1", category="scene")
+    assert len(scenes) == 1
+    assert scenes[0]["payload"]["name"] == "新场景"
+    assert len(archive.list_story_records(db, "w1", category="fact")) == 1
+    db.close()
+
+
+def test_story_records_dedupe_same_payload(tmp_path) -> None:
+    db = _db(tmp_path)
+    payload = {"entity": "唐三", "field": "年龄", "value": "六岁"}
+    first = archive.add_story_record(db, "w1", "fact", payload, chapter_index=1)
+    second = archive.add_story_record(db, "w1", "fact", payload, chapter_index=1)
+    assert second["deduped"] is True
+    assert second["id"] == first["id"]
+    assert len(archive.list_story_records(db, "w1", category="fact")) == 1
+    archive.add_story_record(db, "w1", "fact", payload, chapter_index=2)
+    assert len(archive.list_story_records(db, "w1", category="fact")) == 2
+    db.close()
+
+
 def test_document_versions_and_active_supersede(tmp_path) -> None:
     db = _db(tmp_path)
     first = archive.save_document(

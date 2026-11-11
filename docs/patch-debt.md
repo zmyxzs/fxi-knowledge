@@ -67,7 +67,7 @@
 | warning 越积越多 | warnings_json | 按类型聚合的周报 |
 | FTS 旧版本残留 | join active 过滤 | 定期 vacuum/重建 |
 | 审核队列无人看 | status=draft | 审核 UI/提醒 |
-| 档案与 graph 两套源 | 暂未合并 | 明确唯一写源 |
+| 档案与 graph 两套源 | 735 条已回填，`/api/story` 只读档案 | 保留回填脚本，不再新增 graph 读取 |
 
 ## 五、后续节奏
 

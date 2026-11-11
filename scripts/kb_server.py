@@ -281,7 +281,9 @@ class KnowledgeServer:
         if not works:
             raise ValueError("no work in database")
         if not title:
-            return works[0]
+            if len(works) == 1:
+                return works[0]
+            raise ValueError("work is required when multiple works exist")
         for row in works:
             if row["title"] == title or row["id"] == title:
                 return row
@@ -380,16 +382,27 @@ class KnowledgeServer:
             "hits": hits, "inactive_entities": sorted(inactive),
         }
 
-    def story(self, work: str | None, category: str | None, page_size: int) -> dict:
+    def story(
+        self, work: str | None, category: str | None, page_size: int,
+        offset: int = 0,
+    ) -> dict:
         row = self.resolve_work(work)
         records = archive.list_story_records(
             self.db, row["id"], category=category,
         )
+        if category and not records:
+            records = [
+                record for record in archive.list_story_records(self.db, row["id"])
+                if record["payload"].get("graph_category") == category
+            ]
+        offset = max(0, int(offset))
+        page = records[offset: offset + max(1, int(page_size))]
         items = []
-        for record in records[: max(1, int(page_size))]:
+        for record in page:
             payload = record["payload"]
             items.append({
                 "category": record["category"],
+                "graph_category": payload.get("graph_category"),
                 "chapter_index": record["chapter_index"],
                 "subject": (
                     payload.get("entity") or payload.get("holder")
@@ -406,10 +419,13 @@ class KnowledgeServer:
                 ),
                 "quote": payload.get("evidence"),
             })
+        next_offset = offset + len(items)
         return {
             "work": row["title"],
             "source": "archive",
             "total": len(records),
+            "offset": offset,
+            "next_offset": next_offset if next_offset < len(records) else None,
             "items": items,
         }
 
@@ -618,13 +634,21 @@ class KnowledgeServer:
 
     def list_story_records(
         self, work: str | None, category: str | None, at_chapter: int | None,
+        limit: int = 500, offset: int = 0,
     ) -> dict:
         row = self.resolve_work(work)
+        records = archive.list_story_records(
+            self.db, row["id"], category=category, at_chapter=at_chapter,
+        )
+        offset = max(0, int(offset))
+        page = records[offset: offset + max(1, int(limit))]
+        next_offset = offset + len(page)
         return {
             "work": row["title"],
-            "records": archive.list_story_records(
-                self.db, row["id"], category=category, at_chapter=at_chapter,
-            ),
+            "total": len(records),
+            "offset": offset,
+            "next_offset": next_offset if next_offset < len(records) else None,
+            "records": page,
         }
 
     def documents(
@@ -1592,7 +1616,11 @@ def handler_for(server: KnowledgeServer):
                     return
                 if parsed.path == "/api/story":
                     page_size = min(100, max(1, int(params.get("page_size", "20"))))
-                    self._json(server.story(params.get("work"), params.get("category"), page_size))
+                    offset = max(0, int(params.get("offset", "0")))
+                    self._json(server.story(
+                        params.get("work"), params.get("category"),
+                        page_size, offset,
+                    ))
                     return
                 if parsed.path == "/api/entity":
                     name = (params.get("name") or "").strip()
@@ -1611,9 +1639,12 @@ def handler_for(server: KnowledgeServer):
                 if parsed.path == "/api/story_record":
                     category = (params.get("category") or "").strip() or None
                     at_chapter = params.get("at_chapter")
+                    limit = min(1000, max(1, int(params.get("limit", "500"))))
+                    offset = max(0, int(params.get("offset", "0")))
                     self._json(server.list_story_records(
                         params.get("work"), category,
                         int(at_chapter) if at_chapter is not None else None,
+                        limit, offset,
                     ))
                     return
                 if parsed.path == "/api/documents":

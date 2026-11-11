@@ -59,8 +59,13 @@ class KnowledgeClient:
             params["work"] = work
         return self._request("GET", "/api/search", params=params)
 
-    def story(self, work: str, *, category: str | None = None, page_size: int = 20) -> dict:
-        params: dict[str, Any] = {"work": work, "page_size": page_size}
+    def story(
+        self, work: str, *, category: str | None = None,
+        page_size: int = 20, offset: int = 0,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "work": work, "page_size": page_size, "offset": offset,
+        }
         if category:
             params["category"] = category
         return self._request("GET", "/api/story", params=params)
@@ -129,9 +134,11 @@ class KnowledgeClient:
 
     def story_records(
         self, work: str, *, category: str | None = None,
-        at_chapter: int | None = None,
+        at_chapter: int | None = None, limit: int = 500, offset: int = 0,
     ) -> dict:
-        params: dict[str, Any] = {"work": work}
+        params: dict[str, Any] = {
+            "work": work, "limit": limit, "offset": offset,
+        }
         if category:
             params["category"] = category
         if at_chapter is not None:

@@ -312,10 +312,11 @@ print(client.audit("示例作品", llm=True))
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/story_record` | `{work, category, chapter_index, payload}` |
-| GET | `/api/story_record?work=&category=&at_chapter=` | 读取 |
+| GET | `/api/story_record?work=&category=&at_chapter=&limit=&offset=` | 读取 |
 
-`/api/story` 是统一读取入口：只读档案 `kb_story_record`，返回 `source: archive`。旧 graph 数据已通过 `scripts/backfill_graph_story.py` 回填。  
-`/api/story_record` 是档案原始记录与调试入口。
+`/api/story` 是统一读取入口：只读档案 `kb_story_record`，支持 `offset` 分页，返回 `source: archive`。旧 graph 数据已通过 `scripts/backfill_graph_story.py` 回填。  
+`/api/story_record` 是档案原始记录与调试入口，支持 `limit/offset`。  
+多作品库中查询接口必须带 `work`，否则返回 400。
 
 ### 4.7 编译
 
