@@ -524,6 +524,7 @@ class KnowledgeServer:
     def delete_work(self, project_id: str) -> dict:
         if not self.knowledge.delete_project(project_id, space=self.space):
             raise ValueError("work not found")
+        archive.purge_work(self.db, project_id)
         return {"deleted": project_id}
 
     def add_source(
@@ -599,6 +600,10 @@ class KnowledgeServer:
         if meta.get("chapter_index") is not None:
             rollback = archive.rollback_after_chapter(
                 self.db, str(meta["work_id"]), int(meta["chapter_index"]),
+            )
+        with self.db.transaction() as connection:
+            connection.execute(
+                "DELETE FROM kb_source_meta WHERE source_id = ?", (source_id,),
             )
         return {"deleted": source_id, **rollback}
 

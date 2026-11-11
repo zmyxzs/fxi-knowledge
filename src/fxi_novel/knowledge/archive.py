@@ -344,6 +344,20 @@ def add_story_record(
     return {"id": record_id, "category": category, "chapter_index": chapter_index}
 
 
+def purge_work(db: Any, work_id: str) -> dict:
+    """Remove archive rows when a work is deleted."""
+    deleted = {}
+    with db.transaction() as connection:
+        for table in (
+            "kb_entity_snapshot", "kb_entity", "kb_story_record",
+            "kb_source_meta", "kb_work_profile",
+        ):
+            deleted[table] = connection.execute(
+                f"DELETE FROM {table} WHERE work_id = ?", (work_id,),
+            ).rowcount
+    return deleted
+
+
 def related_entities(db: Any, work_id: str, name: str, *, limit: int = 10) -> list[dict]:
     """One-hop strong relations from the entity's latest cognition snapshot."""
     entity = resolve_entity(db, work_id, name)

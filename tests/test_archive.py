@@ -155,6 +155,20 @@ def test_parse_audit_output_strips_fences() -> None:
     assert violations == [{"type": "REDLINE_BREACH", "entity": None, "detail": "越线"}]
 
 
+def test_purge_work_removes_archive_rows(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", genre="玄幻")
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(db, "w1", "杨凌", 1)
+    archive.add_story_record(db, "w1", "foreshadow", {"x": 1})
+    archive.set_source_meta(db, "s1", "w1", chapter_index=1)
+    archive.purge_work(db, "w1")
+    assert archive.get_entity(db, "w1", "杨凌") is None
+    assert archive.list_story_records(db, "w1") == []
+    assert archive.get_source_meta(db, "s1") == {}
+    db.close()
+
+
 def test_apply_output_merges_ledger_delta(tmp_path) -> None:
     db = _db(tmp_path)
     archive.upsert_entity(db, "w1", "杨凌")
