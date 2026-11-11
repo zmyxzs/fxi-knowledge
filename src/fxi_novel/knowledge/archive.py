@@ -844,8 +844,9 @@ def compile_archive(
 
 def _parse_amount(value: str) -> int | None:
     text = value.strip().replace(",", "")
-    if text.isdigit():
-        return int(text)
+    match = re.match(r"^(-?\d+(?:\.\d+)?)", text)
+    if match:
+        return int(float(match.group(1)))
     chinese = re.sub(r"[^零一二三四五六七八九十百千万两]", "", text)
     if not chinese:
         return None
@@ -869,8 +870,95 @@ def _parse_amount(value: str) -> int | None:
     return total + section + number
 
 
+def _audit_structured_changes(
+    db: Any, work_id: str, text: str, changes: list[dict], *,
+    chapter_index: int | None, profile: dict, protagonist: str | None,
+) -> list[dict]:
+    violations: list[dict] = []
+    snapshot = (
+        get_snapshot(db, work_id, protagonist, at_chapter=chapter_index)
+        if protagonist else None
+    )
+    dynamic = (snapshot or {}).get("dynamic_state", {})
+    ledger = dynamic.get("inventory_ledger", {})
+    balances = {
+        str(name): value
+        for name, value in {
+            **dynamic.get("resources", {}),
+            **ledger.get("currency", {}),
+        }.items()
+    }
+    resource_changes = 0
+    for change in changes:
+        if not isinstance(change, dict):
+            continue
+        evidence = str(change.get("evidence") or "").strip()
+        if evidence and evidence not in text:
+            violations.append({
+                "type": "EVIDENCE_MISMATCH",
+                "entity": change.get("entity"),
+                "detail": f"证据未在正文中逐字出现：{evidence[:40]}",
+            })
+        if str(change.get("kind") or "") != "resource":
+            continue
+        resource_changes += 1
+        field = str(change.get("field") or "").strip()
+        balance = balances.get(field)
+        if not field or not isinstance(balance, int):
+            continue
+        amount = _parse_amount(str(change.get("amount") or ""))
+        direction = str(change.get("direction") or "").strip()
+        if amount is not None and direction == "decrease":
+            if amount > balance:
+                violations.append({
+                    "type": "LEDGER_ERROR",
+                    "entity": protagonist,
+                    "detail": f"{field} 支出 {amount}，当前账面 {balance}",
+                })
+            continue
+        if amount is not None and direction == "increase":
+            continue
+        if amount is not None and direction == "set":
+            if amount < 0:
+                violations.append({
+                    "type": "LEDGER_ERROR",
+                    "entity": protagonist,
+                    "detail": f"{field} 结算为负数：{amount}",
+                })
+            continue
+        start = _parse_amount(str(change.get("from") or ""))
+        end = _parse_amount(str(change.get("to") or ""))
+        if start is not None and start != balance:
+            violations.append({
+                "type": "LEDGER_ERROR",
+                "entity": protagonist,
+                "detail": f"{field} 起始 {start}，当前账面 {balance}",
+            })
+        elif end is not None and end < 0:
+            violations.append({
+                "type": "LEDGER_ERROR",
+                "entity": protagonist,
+                "detail": f"{field} 结算为负数：{end}",
+            })
+    units = [
+        str(unit) for unit in (profile.get("resource_units") or [])
+        if str(unit).strip()
+    ] or sorted(balances)
+    if resource_changes == 0 and units:
+        mentioned = [unit for unit in units if unit in text]
+        if mentioned:
+            violations.append({
+                "type": "NEEDS_REVIEW",
+                "entity": protagonist,
+                "detail": f"正文提到 {', '.join(mentioned)}，但未抽出资源变化",
+            })
+    return violations
+
+
 def audit_draft(
     db: Any, work_id: str, text: str, *, chapter_index: int | None = None,
+    changes: list[dict] | None = None,
+    skip_ledger_scan: bool = False,
 ) -> dict:
     violations: list[dict] = []
     entities = list_entities(db, work_id, include_inactive=True)
@@ -886,7 +974,12 @@ def audit_draft(
             })
     profile = get_work_profile(db, work_id)
     protagonist = profile.get("protagonist_name")
-    if protagonist:
+    if changes is not None:
+        violations.extend(_audit_structured_changes(
+            db, work_id, text, changes,
+            chapter_index=chapter_index, profile=profile, protagonist=protagonist,
+        ))
+    if not skip_ledger_scan and protagonist:
         snapshot = get_snapshot(db, work_id, protagonist, at_chapter=chapter_index)
         dynamic = (snapshot or {}).get("dynamic_state", {})
         ledger = dynamic.get("inventory_ledger", {})

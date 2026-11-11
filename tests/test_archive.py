@@ -410,6 +410,111 @@ def test_apply_memory_output_writes_memory_records(tmp_path) -> None:
     db.close()
 
 
+def test_structured_audit_checks_balance_and_evidence(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
+    )
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"resources": {"灵石": 10}},
+    )
+    text = "杨凌花了九块灵石买剑。"
+    report = archive.audit_draft(
+        db, "w1", text, chapter_index=1,
+        changes=[{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "from": "10", "to": "1", "evidence": "花了九块灵石",
+        }],
+        skip_ledger_scan=True,
+    )
+    assert report["passed"] is True
+    report = archive.audit_draft(
+        db, "w1", text, chapter_index=1,
+        changes=[{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "from": "10", "to": "-2", "evidence": "花了九块灵石",
+        }],
+        skip_ledger_scan=True,
+    )
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "LEDGER_ERROR"
+    report = archive.audit_draft(
+        db, "w1", text, chapter_index=1,
+        changes=[{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "from": "10", "to": "1", "evidence": "正文里没有这句",
+        }],
+        skip_ledger_scan=True,
+    )
+    assert any(item["type"] == "EVIDENCE_MISMATCH" for item in report["violations"])
+    db.close()
+
+
+def test_structured_audit_uses_direction_and_amount(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
+    )
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"resources": {"灵石": 10}},
+    )
+    report = archive.audit_draft(
+        db, "w1", "杨凌耗费了十二块灵石买剑。", chapter_index=1,
+        changes=[{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "direction": "decrease", "amount": 12,
+            "evidence": "耗费了十二块灵石",
+        }],
+        skip_ledger_scan=True,
+    )
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "LEDGER_ERROR"
+    db.close()
+
+
+def test_apply_memory_output_applies_resource_direction(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive_extraction.apply_memory_output(db, "w1", 1, {
+        "state_changes": [{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "direction": "set", "amount": 10, "evidence": "十块灵石",
+        }],
+    })
+    archive_extraction.apply_memory_output(db, "w1", 2, {
+        "state_changes": [{
+            "entity": "杨凌", "kind": "resource", "field": "灵石",
+            "direction": "decrease", "amount": 3, "evidence": "花了三块灵石",
+        }],
+    })
+    snapshot = archive.get_snapshot(db, "w1", "杨凌", at_chapter=2)
+    assert snapshot["dynamic_state"]["resources"]["灵石"] == 7
+    assert snapshot["dynamic_state"]["inventory_ledger"]["currency"]["灵石"] == 7
+    db.close()
+
+
+def test_structured_audit_flags_missing_resource_change(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
+    )
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"resources": {"灵石": 10}},
+    )
+    report = archive.audit_draft(
+        db, "w1", "杨凌耗费了十二块灵石买剑。", chapter_index=1,
+        changes=[], skip_ledger_scan=True,
+    )
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "NEEDS_REVIEW"
+    db.close()
+
+
 def test_work_type_registry_and_custom_profile(tmp_path) -> None:
     db = _db(tmp_path)
     types = {row["work_type"] for row in archive.list_work_types(db)}

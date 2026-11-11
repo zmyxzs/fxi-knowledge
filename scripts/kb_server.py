@@ -473,44 +473,34 @@ class KnowledgeServer:
         llm: bool = False,
     ) -> dict:
         row = self.resolve_work(work)
-        report = archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
         if not llm:
+            report = archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
+            report["method"] = "regex"
             return report
         if not (self.llm_base_url and self.llm_api_key and self.llm_model):
             raise ValueError("LLM audit is not configured")
-        entities = []
-        for entity in archive.list_entities(self.db, row["id"], include_inactive=True):
-            snapshot = archive.get_snapshot(
-                self.db, row["id"], entity["canonical_name"], at_chapter=chapter,
-            )
-            entities.append({
-                **entity,
-                "dynamic_state": snapshot["dynamic_state"] if snapshot else {},
-                "lifecycle_status": (
-                    snapshot["lifecycle_status"] if snapshot
-                    else entity.get("lifecycle_status")
-                ),
-            })
-        redlines = [
-            str(record["payload"].get("text") or record["payload"].get("rule") or "")
-            for record in archive.list_story_records(
-                self.db, row["id"], category="redline",
-            )
-            if record["payload"].get("text") or record["payload"].get("rule")
-        ]
-        violations = asyncio.run(archive_extraction.audit_with_openai(
-            text, entities, redlines, chapter or 0,
-            base_url=self.llm_base_url,
-            api_key=self.llm_api_key,
-            model=self.llm_model,
-        ))
-        seen = {(item["type"], item["detail"]) for item in report["violations"]}
-        for violation in violations:
-            key = (violation["type"], violation["detail"])
-            if key not in seen:
-                report["violations"].append(violation)
-                seen.add(key)
-        report["passed"] = not report["violations"]
+        profile = archive.get_work_profile(self.db, row["id"])
+        try:
+            output = asyncio.run(archive_extraction.extract_memory_with_openai(
+                text, chapter or 0,
+                base_url=self.llm_base_url,
+                api_key=self.llm_api_key,
+                model=self.llm_model,
+                entity_types=profile.get("entity_types"),
+                story_categories=profile.get("story_categories"),
+            ))
+        except Exception as exc:  # noqa: BLE001 - degrade to deterministic scan
+            report = archive.audit_draft(self.db, row["id"], text, chapter_index=chapter)
+            report["method"] = "regex_fallback"
+            report["fallback_reason"] = f"{type(exc).__name__}: {exc}"
+            return report
+        changes = output.get("state_changes") or []
+        report = archive.audit_draft(
+            self.db, row["id"], text, chapter_index=chapter,
+            changes=changes, skip_ledger_scan=True,
+        )
+        report["method"] = "structured"
+        report["extracted_changes"] = len(changes)
         return report
 
     def add_story_record(self, work: str | None, body: dict) -> dict:

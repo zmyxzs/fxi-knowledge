@@ -55,12 +55,12 @@
 | 编译九模块 | `_MODULES` 写死标题/顺序 | 从 `work_profile.archive_modules` 读取 |
 | 查询同义词 | `_QUERY_SYNONYMS` 固定玄幻词 | 从 `work_profile.glossary` 注入，按请求作用域生效 |
 | `work_type` | 只允许 `writing`/`deconstruct` | `kb_work_type` 注册表 + `/api/work_types` |
+| 初稿审计动词 | 固定中文动词正则 | `llm=true` 先抽取 `state_changes`，再代码对账；正则只做 fallback |
 
 ### 2.2 尚未治理
 
 | 位置 | 硬编码 | 风险 | 建议 |
 |---|---|---|---|
-| `archive.py` 审计动词 | `花了/花费/花掉/支付/消耗` | 其他表达漏检 | 语言模式配置，或改用结构化 state_changes |
 | `archive.py` 拆书占位符 | `[主角]/[反派A]/[配角B]` | 其他拆书模板不同 | 占位符配置 |
 | `kb_server.py` 默认空间 | `space="writing"` / `branch="main"` | 多空间时需显式 | 保持默认，但客户端应显式传 |
 
@@ -115,6 +115,32 @@
 ```
 
 作品写“仙玉”“贡献点”“信用点”，都不需要改代码。
+
+### 3.4 初稿审计：抽取与判定分离
+
+`POST /api/audit` 且 `llm=true`：
+
+```text
+初稿
+  → memory 抽取（只抽取，不下结论）
+  → state_changes: [{entity, kind, field, direction, amount, evidence}]
+  → 代码对账
+       decrease 且 amount > 余额 → LEDGER_ERROR
+       set 为负数               → LEDGER_ERROR
+       evidence 不在正文        → EVIDENCE_MISMATCH
+       提到资源但没抽出变化     → NEEDS_REVIEW
+```
+
+返回增加：
+
+```json
+{"method": "structured", "extracted_changes": 1}
+```
+
+- 抽取失败 → `method=regex_fallback`
+- `llm=false` → `method=regex`
+
+“耗费/扣除/打赏/进贡”不再需要逐个加动词。
 
 ---
 

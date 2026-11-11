@@ -347,7 +347,13 @@ print(client.audit("示例作品", llm=True))
 ]}
 ```
 
-`type` 取值：`HARD_RULE_CONFLICT`、`REDLINE_BREACH`、`DEAD_CHARACTER_ACTIVE`、`LEDGER_ERROR`。
+`type` 取值：`HARD_RULE_CONFLICT`、`REDLINE_BREACH`、`DEAD_CHARACTER_ACTIVE`、`LEDGER_ERROR`、`EVIDENCE_MISMATCH`、`NEEDS_REVIEW`。
+
+`llm=true` 时：
+
+- `method=structured`：先抽取 `state_changes`，再由代码对账，返回 `extracted_changes`
+- 抽取失败：`method=regex_fallback`，退回正则扫描
+- `llm=false`：`method=regex`
 
 ### 4.9 解析
 
