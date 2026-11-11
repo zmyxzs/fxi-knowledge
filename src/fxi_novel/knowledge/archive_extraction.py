@@ -7,6 +7,7 @@ entity upserts, per-chapter snapshots and ledger arithmetic.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import httpx
@@ -387,4 +388,157 @@ def apply_output(db: Any, work_id: str, chapter_index: int, output: dict) -> dic
         "entities": applied_entities,
         "story_records": records,
         "summary": output.get("chapter_summary"),
+    }
+MEMORY_PROMPT = """你是小说记忆抽取器。只输出一个 JSON 对象，不要解释、不要 Markdown。
+格式：
+{"entities":[{"name":"标准名","type":"character|location|item|organization|concept","aliases":[]}],
+ "facts":[{"entity":"实体名","field":"属性","value":"值","evidence":"原文短句"}],
+ "state_changes":[{"entity":"实体名","field":"字段","from":"旧值","to":"新值","evidence":"原文短句"}],
+ "scenes":[{"summary":"一段完整因果","participants":["实体名"],"evidence":"原文短句"}],
+ "threads":[{"name":"线程名","transition":"new|advanced|blocked|resolved","evidence":"原文短句"}]}
+规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；threads 只写跨章仍有影响的问题；没有就空数组。"""
+
+
+def build_memory_messages(text: str, chapter_index: int) -> list[dict[str, str]]:
+    return [
+        {"role": "system", "content": MEMORY_PROMPT},
+        {"role": "user", "content": json.dumps(
+            {"chapter_index": chapter_index, "text": text[:12000]},
+            ensure_ascii=False,
+        )},
+    ]
+
+
+async def extract_memory_with_openai(
+    text: str,
+    chapter_index: int,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 120.0,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": _merge_system(build_memory_messages(text, chapter_index)),
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_output(content)
+
+
+def _ledger_number(value: Any) -> int | None:
+    text = str(value).strip().replace(",", "")
+    match = re.match(r"^(-?\d+(?:\.\d+)?)", text)
+    if match:
+        return int(float(match.group(1)))
+    chinese = re.sub(r"[^零一二三四五六七八九十百千万两]", "", text)
+    if not chinese:
+        return None
+    digits = {
+        "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    total = 0
+    section = 0
+    number = 0
+    for char in chinese:
+        if char in digits:
+            number = digits[char]
+        elif char in units:
+            unit = units[char]
+            if unit == 10000:
+                section = (section + number) * unit
+                total += section
+                section = 0
+            else:
+                section += (number or 1) * unit
+            number = 0
+    return total + section + number
+
+
+def apply_memory_output(
+    db: Any, work_id: str, chapter_index: int, output: dict,
+) -> dict:
+    from . import archive
+
+    applied_entities = []
+    for entry in output.get("entities") or []:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name") or "").strip()
+        if not name:
+            continue
+        entity = archive.upsert_entity(
+            db, work_id, name,
+            aliases=[str(item) for item in entry.get("aliases") or []],
+            entity_type=entry.get("type"),
+        )
+        applied_entities.append(entity["canonical_name"])
+
+    changes = []
+    for change in output.get("state_changes") or []:
+        if not isinstance(change, dict):
+            continue
+        name = str(change.get("entity") or "").strip()
+        if not name:
+            continue
+        entity = archive.resolve_entity(db, work_id, name)
+        if entity is None:
+            entity = archive.upsert_entity(db, work_id, name)
+        canonical = entity["canonical_name"]
+        previous = archive.get_snapshot(
+            db, work_id, canonical, at_chapter=chapter_index,
+        )
+        dynamic = dict(previous["dynamic_state"]) if previous else {}
+        field = str(change.get("field") or "").strip()
+        value = change.get("to")
+        if field and value is not None:
+            dynamic[field] = value
+            if field in {"铜钱", "灵石", "金币", "银两"}:
+                amount = _ledger_number(value)
+                if amount is not None:
+                    ledger = dict(dynamic.get("inventory_ledger") or {})
+                    currency = dict(ledger.get("currency") or {})
+                    currency[field] = amount
+                    ledger["currency"] = currency
+                    dynamic["inventory_ledger"] = ledger
+        archive.write_snapshot(
+            db, work_id, canonical, chapter_index,
+            lifecycle_status=str(
+                change.get("lifecycle_status")
+                or (previous["lifecycle_status"] if previous else "active")
+            ),
+            dynamic_state=dynamic,
+        )
+        changes.append({"entity": canonical, "field": field, "to": value})
+
+    facts = [
+        archive.add_story_record(db, work_id, "fact", fact, chapter_index=chapter_index)
+        for fact in (output.get("facts") or []) if isinstance(fact, dict)
+    ]
+    scenes = [
+        archive.add_story_record(db, work_id, "scene", scene, chapter_index=chapter_index)
+        for scene in (output.get("scenes") or []) if isinstance(scene, dict)
+    ]
+    threads = [
+        archive.add_story_record(db, work_id, "thread", thread, chapter_index=chapter_index)
+        for thread in (output.get("threads") or []) if isinstance(thread, dict)
+    ]
+    return {
+        "chapter_index": chapter_index,
+        "entities": applied_entities,
+        "state_changes": changes,
+        "facts": len(facts),
+        "scenes": len(scenes),
+        "threads": len(threads),
     }

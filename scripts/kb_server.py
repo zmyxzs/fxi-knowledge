@@ -638,8 +638,8 @@ class KnowledgeServer:
         self, work: str | None, source_ids: list[str] | None,
         *, mode: str = "state_update", force: bool = False,
     ) -> dict:
-        if mode not in {"state_update", "deconstruct_extract"}:
-            raise ValueError("mode must be state_update or deconstruct_extract")
+        if mode not in {"state_update", "deconstruct_extract", "memory"}:
+            raise ValueError("mode must be state_update, deconstruct_extract or memory")
         row = self.resolve_work(work)
         ids = list(source_ids) if source_ids else [
             source["id"]
@@ -685,6 +685,17 @@ class KnowledgeServer:
             KnowledgeRepository(db, embedding_indexing_enabled=False)
         )
         knowledge.set_writing_narrative_order_reader(self._narrative_reader(row["id"]))
+        mode = self.jobs.get(job_id, {}).get("mode") or "state_update"
+        if mode == "memory":
+            self._update_job(job_id, status="running")
+            result = await self._run_memory_update(knowledge, row, ids)
+            status = "completed" if result.get("status") == "completed" else "failed"
+            self._update_job(
+                job_id, status=status, archive=result,
+                summary={"memory": result}, error=result.get("error"),
+            )
+            db.close()
+            return
         route = self._llm_route()
         gateway = ModelGateway(GatewayConfig(chat=route, embedding=route))
         prompts = project_root() / "prompts" / "learning"
@@ -753,6 +764,45 @@ class KnowledgeServer:
                 (batch_id,),
             ).fetchone()
         return str(row[0]) if row is not None else None
+
+    async def _run_memory_update(
+        self, knowledge: Any, row: dict, ids: list[str],
+    ) -> dict:
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            return {"status": "skipped", "mode": "memory", "reason": "LLM is not configured"}
+        chapters = []
+        try:
+            for source_id in ids:
+                meta = archive.get_source_meta(self.db, source_id)
+                text = str(meta.get("content_raw") or "")
+                if not text:
+                    current = knowledge.repository.get_source(
+                        source_id, content_offset=0, content_limit=50_000,
+                        include_evidence=False,
+                    )
+                    text = str((current or {}).get("content") or "")
+                if not text:
+                    continue
+                chapter_index = (
+                    int(meta["chapter_index"])
+                    if meta.get("chapter_index") is not None
+                    else archive.next_chapter_index(self.db, row["id"])
+                )
+                output = await archive_extraction.extract_memory_with_openai(
+                    text, chapter_index,
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                chapters.append(archive_extraction.apply_memory_output(
+                    self.db, row["id"], chapter_index, output,
+                ))
+            return {"status": "completed", "mode": "memory", "chapters": chapters}
+        except Exception as exc:  # noqa: BLE001 - surface on the job
+            return {
+                "status": "failed", "mode": "memory",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     async def _run_archive_update(
         self, job_id: str, knowledge: Any, row: dict, ids: list[str], mode: str,

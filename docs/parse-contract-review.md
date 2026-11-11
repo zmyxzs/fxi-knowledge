@@ -296,6 +296,14 @@ Q3 剩余 600
 - 解析成功率可从 `partial` 提升到 `completed`
 - 记忆层所需数据齐全
 
+**已落地**（`/api/parse` `mode=memory`）。实测同一章：
+
+```text
+status=completed  archive=completed  12s
+entities=6  facts=7  scenes=3  threads=2
+杨凌 dynamic={"铜钱":"六百铜钱","inventory_ledger":{"currency":{"铜钱":600}}}
+```
+
 ### 方案二：保留全量解析，但拆成三次调用
 
 - A：实体 + 事实

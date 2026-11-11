@@ -16,7 +16,7 @@
 | 实体档案 | A 路硬设定、B 路动态状态、C 路认知与关系 |
 | 章节快照 | 按 `chapter_index` 版本化，删除/编辑自动回滚 |
 | 检索 | 词法检索、卡片、拆书骨架检索 |
-| 解析 | 异步任务，`state_update` / `deconstruct_extract` 两种模式 |
+| 解析 | 异步任务，`state_update` / `deconstruct_extract` / `memory` 三种模式 |
 | 审计 | 确定性检查 + 可选 LLM 语义审校 |
 | 编译 | 一键生成九大模块 Markdown |
 
@@ -175,6 +175,7 @@ print(client.audit("示例作品", llm=True))
 
 - `mode=state_update`：解析后抽取实体/状态/账本，写入档案层
 - `mode=deconstruct_extract`：抽取拆书骨架与文风锚点
+- `mode=memory`：轻量记忆抽取，只产出实体/事实/状态变化/场景/线程，不跑全量图解析
 - 任务状态落盘 `parse_jobs.json`，重启后未完成任务标为 `interrupted`
 - `progress` 每 3 秒刷新阶段计数与每章状态
 
@@ -356,6 +357,7 @@ print(client.audit("示例作品", llm=True))
 
 - `state_update`：档案状态更新
 - `deconstruct_extract`：拆书骨架与锚点
+- `memory`：轻量记忆抽取（实体/事实/状态/场景/线程），约 10–20 秒/章
 
 返回 202：
 
@@ -486,7 +488,7 @@ sqlite3 ~/fxi-bench/data/bench-db.sqlite3 ".backup /tmp/kg-$(date +%F).sqlite3"
 |---|---|---|
 | 401 invalid api key | 密钥不匹配 | 检查 `X-API-Key` 与 `.env` |
 | 503 write API disabled | 未配置 `FXI_KB_API_KEY` | 写入 `.env` 并重启 |
-| 400 mode must be … | parse mode 非法 | 用 `state_update` / `deconstruct_extract` |
+| 400 mode must be … | parse mode 非法 | 用 `state_update` / `deconstruct_extract` / `memory` |
 | 400 LLM … not configured | 未配置 LLM | 补齐三个 `FXI_KB_LLM_*` |
 | 500 FOREIGN KEY constraint failed | 历史删除 bug | 已在 `repository_projects.py` 修复 |
 | parse partial，publish failed | 解析阶段失败 | 查 `journalctl` 与 batch item diagnostic |

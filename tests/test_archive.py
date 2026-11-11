@@ -263,3 +263,42 @@ def test_reserve_source_meta_rejects_duplicate_chapter(tmp_path) -> None:
         raise AssertionError("duplicate chapter_index must be rejected")
     assert archive.next_chapter_index(db, "w1") == 2
     db.close()
+
+
+def test_ledger_number_parses_chinese_and_digits() -> None:
+    assert archive_extraction._ledger_number("600") == 600
+    assert archive_extraction._ledger_number("六百铜钱") == 600
+    assert archive_extraction._ledger_number("一千二百") == 1200
+    assert archive_extraction._ledger_number("十五") == 15
+
+
+def test_apply_memory_output_writes_memory_records(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_memory_output(db, "w1", 1, {
+        "entities": [{"name": "杨凌", "type": "character", "aliases": ["凌子阳"]}],
+        "facts": [{
+            "entity": "杨凌", "field": "剩余铜钱", "value": "600",
+            "evidence": "还剩六百铜钱",
+        }],
+        "state_changes": [{
+            "entity": "杨凌", "field": "铜钱", "from": "1000", "to": "600",
+            "evidence": "还剩六百铜钱",
+        }],
+        "scenes": [{
+            "summary": "杨凌买灵米", "participants": ["杨凌"],
+            "evidence": "他花掉四百铜钱买了灵米",
+        }],
+        "threads": [{
+            "name": "入门", "transition": "new", "evidence": "赵洵收他为徒",
+        }],
+    })
+    assert result["entities"] == ["杨凌"]
+    entity = archive.get_entity(db, "w1", "凌子阳")
+    assert entity["canonical_name"] == "杨凌"
+    snapshot = archive.get_snapshot(db, "w1", "杨凌", at_chapter=1)
+    assert snapshot["dynamic_state"]["铜钱"] == "600"
+    assert snapshot["dynamic_state"]["inventory_ledger"]["currency"]["铜钱"] == 600
+    assert archive.list_story_records(db, "w1", category="fact")
+    assert archive.list_story_records(db, "w1", category="scene")
+    assert archive.list_story_records(db, "w1", category="thread")
+    db.close()
