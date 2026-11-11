@@ -307,6 +307,35 @@ def test_apply_memory_output_filters_records_by_category(tmp_path) -> None:
     db.close()
 
 
+def test_compile_uses_work_module_config(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", genre="玄幻",
+        archive_modules=[
+            {"title": "一、世界观", "kind": "meta"},
+            {"title": "二、伏笔", "kind": "records", "category": "foreshadow"},
+        ],
+    )
+    archive.add_story_record(db, "w1", "foreshadow", {
+        "surface_action": "马东训斥弟子",
+        "protagonist_blind_spot": "主角不知情",
+        "is_revealed": False,
+    }, chapter_index=1)
+    markdown = archive.compile_archive(db, "w1", 2, "")["compiled_archive_markdown"]
+    headings = [line for line in markdown.splitlines() if line.startswith("### ")]
+    assert headings == ["### 一、世界观", "### 二、伏笔"]
+    assert "反派表象行为：马东训斥弟子" in markdown
+    db.close()
+
+
+def test_work_profile_archive_modules_roundtrip(tmp_path) -> None:
+    db = _db(tmp_path)
+    modules = [{"title": "一、世界观", "kind": "meta"}]
+    archive.set_work_profile(db, "w1", archive_modules=modules)
+    assert archive.get_work_profile(db, "w1")["archive_modules"] == modules
+    db.close()
+
+
 def test_ledger_number_parses_chinese_and_digits() -> None:
     assert archive_extraction._ledger_number("600") == 600
     assert archive_extraction._ledger_number("六百铜钱") == 600

@@ -52,12 +52,12 @@
 | `archive.py` 工作画像 | 无资源单位字段 | 新增 `resource_units`（JSON 数组） |
 | 记忆提示词实体类型 | 固定 5 类 | 从 `work_profile.entity_types` 注入 |
 | 记忆提示词故事分类 | 固定 10 类 | 从 `work_profile.story_categories` 注入 |
+| 编译九模块 | `_MODULES` 写死标题/顺序 | 从 `work_profile.archive_modules` 读取 |
 
 ### 2.2 尚未治理
 
 | 位置 | 硬编码 | 风险 | 建议 |
 |---|---|---|---|
-| `archive.py` `_MODULES` | 九模块标题与 `power_and_laws` 等 category | 换题材/换档案模板就不适用 | 模块 schema 存配置，按 `work_type` 选 |
 | `archive.py` `work_type` | 只允许 `writing`/`deconstruct` | 未来可能有“同人”“剧本”等 | 改成可注册的 workflow 类型 |
 | `tokenizer.py` 查询同义词 | `数值/身体/提升/功法/属性/增幅/等级` | 只适合玄幻 | 改成作品级 glossary |
 | `archive.py` 审计动词 | `花了/花费/花掉/支付/消耗` | 其他表达漏检 | 语言模式配置，或改用结构化 state_changes |
@@ -132,7 +132,19 @@
 }
 ```
 
-`resource_units`、`entity_types`、`story_categories` 均已实现，`/api/work_profile` 可直接写入。
+`resource_units`、`entity_types`、`story_categories`、`archive_modules` 均已实现，`/api/work_profile` 可直接写入。
+
+```json
+{
+  "archive_modules": [
+    {"title": "一、世界观", "kind": "meta"},
+    {"title": "二、人物", "kind": "characters"},
+    {"title": "三、伏笔", "kind": "records", "category": "foreshadow"}
+  ]
+}
+```
+
+`kind` 支持 `meta` / `records` / `characters` / `protagonist`。
 
 ---
 

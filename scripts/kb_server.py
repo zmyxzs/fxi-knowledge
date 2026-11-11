@@ -378,6 +378,12 @@ class KnowledgeServer:
             ):
                 raise ValueError(f"{key} must be a list of strings")
             lists[key] = [str(item) for item in values] if values else None
+        modules = body.get("archive_modules")
+        if modules is not None and (
+            not isinstance(modules, list)
+            or any(not isinstance(module, dict) for module in modules)
+        ):
+            raise ValueError("archive_modules must be a list of objects")
         return {
             "work": row["title"],
             **archive.set_work_profile(
@@ -389,6 +395,7 @@ class KnowledgeServer:
                 resource_units=lists["resource_units"],
                 entity_types=lists["entity_types"],
                 story_categories=lists["story_categories"],
+                archive_modules=modules,
             ),
         }
 

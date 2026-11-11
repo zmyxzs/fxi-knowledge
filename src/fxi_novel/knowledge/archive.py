@@ -26,7 +26,8 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     protagonist_name TEXT,
     resource_units_json TEXT NOT NULL DEFAULT '[]',
     entity_types_json TEXT NOT NULL DEFAULT '["character","location","item","organization","concept"]',
-    story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]'
+    story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]',
+    archive_modules_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS kb_source_meta (
     source_id TEXT PRIMARY KEY,
@@ -89,6 +90,10 @@ def ensure_schema(db: Any) -> None:
                 "\"foreshadow\",\"completed_storylines\",\"trope_skeleton\","
                 "\"style_anchor\",\"timer\",\"redline\"]'"
             )
+        if "archive_modules_json" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN archive_modules_json TEXT NOT NULL DEFAULT '[]'"
+            )
     try:
         with db.transaction() as connection:
             connection.execute(
@@ -108,6 +113,36 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+DEFAULT_ARCHIVE_MODULES: tuple[dict[str, str], ...] = (
+    {"title": "模块一：题材与元规则", "kind": "meta"},
+    {"title": "模块二：力量体系与金手指", "kind": "records", "category": "power_and_laws"},
+    {"title": "模块三：地图与区域规则", "kind": "records", "category": "map"},
+    {"title": "模块四：出场人物简表", "kind": "characters"},
+    {"title": "模块五：主角高维面板", "kind": "protagonist"},
+    {"title": "模块六：派系与势力", "kind": "records", "category": "faction"},
+    {"title": "模块七：活跃故事线", "kind": "records", "category": "active_storyline"},
+    {"title": "模块八：伏笔与认知盲区", "kind": "records", "category": "foreshadow"},
+    {"title": "模块九：已完结故事线", "kind": "records", "category": "completed_storylines"},
+)
+
+
+def _clean_modules(values: list[dict] | None) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for item in values or []:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        kind = str(item.get("kind") or "").strip()
+        if not title or kind not in {"meta", "records", "characters", "protagonist"}:
+            continue
+        row = {"title": title, "kind": kind}
+        category = str(item.get("category") or "").strip()
+        if category:
+            row["category"] = category
+        cleaned.append(row)
+    return cleaned
+
+
 def set_work_profile(
     db: Any,
     work_id: str,
@@ -119,6 +154,7 @@ def set_work_profile(
     resource_units: list[str] | None = None,
     entity_types: list[str] | None = None,
     story_categories: list[str] | None = None,
+    archive_modules: list[dict] | None = None,
 ) -> dict:
     if work_type not in {"writing", "deconstruct"}:
         raise ValueError("work_type must be writing or deconstruct")
@@ -129,6 +165,10 @@ def set_work_profile(
         entity_types = existing.get("entity_types") or []
     if story_categories is None:
         story_categories = existing.get("story_categories") or []
+    if archive_modules is None:
+        archive_modules = existing.get("archive_modules") or [
+            dict(module) for module in DEFAULT_ARCHIVE_MODULES
+        ]
 
     def clean(values: list[str]) -> list[str]:
         return list(dict.fromkeys(
@@ -140,22 +180,25 @@ def set_work_profile(
             """
             INSERT INTO kb_work_profile(
                 work_id, work_type, genre, world_summary, protagonist_name,
-                resource_units_json, entity_types_json, story_categories_json
+                resource_units_json, entity_types_json, story_categories_json,
+                archive_modules_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
                 protagonist_name=excluded.protagonist_name,
                 resource_units_json=excluded.resource_units_json,
                 entity_types_json=excluded.entity_types_json,
-                story_categories_json=excluded.story_categories_json
+                story_categories_json=excluded.story_categories_json,
+                archive_modules_json=excluded.archive_modules_json
             """,
             (
                 work_id, work_type, genre, world_summary, protagonist_name,
                 json.dumps(clean(resource_units), ensure_ascii=False),
                 json.dumps(clean(entity_types), ensure_ascii=False),
                 json.dumps(clean(story_categories), ensure_ascii=False),
+                json.dumps(_clean_modules(archive_modules), ensure_ascii=False),
             ),
         )
     return get_work_profile(db, work_id)
@@ -176,12 +219,17 @@ def get_work_profile(db: Any, work_id: str) -> dict:
                 "foreshadow", "completed_storylines", "trope_skeleton",
                 "style_anchor", "timer", "redline",
             ],
+            "archive_modules": [dict(module) for module in DEFAULT_ARCHIVE_MODULES],
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
     profile["entity_types"] = json.loads(profile.pop("entity_types_json", "[]") or "[]")
     profile["story_categories"] = json.loads(
         profile.pop("story_categories_json", "[]") or "[]"
+    )
+    profile["archive_modules"] = (
+        json.loads(profile.pop("archive_modules_json", "[]") or "[]")
+        or [dict(module) for module in DEFAULT_ARCHIVE_MODULES]
     )
     return profile
 
@@ -573,17 +621,6 @@ def list_story_records(
     ]
 
 
-_MODULES = (
-    ("模块一：题材与元规则", "power_and_laws"),
-    ("模块二：力量体系与金手指", "power_and_laws"),
-    ("模块三：地图与区域规则", "map"),
-    ("模块六：派系与势力", "faction"),
-    ("模块七：活跃故事线", "active_storyline"),
-    ("模块八：伏笔与认知盲区", "foreshadow"),
-    ("模块九：已完结故事线", "completed_storylines"),
-)
-
-
 def compile_archive(
     db: Any, work_id: str, chapter_index: int, outline: str = "",
 ) -> dict:
@@ -607,91 +644,89 @@ def compile_archive(
                 matched.append(entity)
                 matched_names.add(related["name"])
 
-    module_sections: dict[str, list[str]] = {}
-    module_sections["模块一：题材与元规则"] = [
-        "### 模块一：题材与元规则",
-        f"- 类型：{profile.get('genre') or '未设置'}",
-        f"- 世界背景：{profile.get('world_summary') or '未设置'}",
-    ]
-    for title, category in _MODULES[1:]:
-        records = list_story_records(
-            db, work_id, category=category, at_chapter=chapter_index,
-        )
-        lines = [f"### {title}"]
-        if category == "foreshadow":
-            unrevealed = [
-                record for record in records
-                if not record["payload"].get("is_revealed")
-            ]
-            if unrevealed:
-                for record in unrevealed:
-                    payload = record["payload"]
-                    surface = (
-                        payload.get("surface_action") or payload.get("surface")
-                        or "反派按表象行动"
-                    )
-                    blind = (
-                        payload.get("protagonist_blind_spot")
-                        or "主角当前不知情，严禁写主角起疑"
-                    )
-                    lines.append(
-                        f"- [反派表象行为：{surface}；主角认知盲区锁：{blind}]"
-                    )
-            else:
-                lines.append("- （暂无未揭穿伏笔）")
-        elif records:
-            for record in records:
-                lines.append(f"- {json.dumps(record['payload'], ensure_ascii=False)}")
-        else:
-            lines.append("- （暂无记录）")
-        if category == "active_storyline":
-            for timer in list_story_records(
-                db, work_id, category="timer", at_chapter=chapter_index,
-            ):
-                lines.append(
-                    f"- 倒计时：{timer['payload'].get('name')} "
-                    f"剩余 {timer['payload'].get('chapters_remaining')} 章"
-                )
-        module_sections[title] = lines
-
-    module_four = ["### 模块四：出场人物简表"]
-    for entity in matched[:20]:
-        snapshot = get_snapshot(db, work_id, entity["canonical_name"], at_chapter=chapter_index)
-        state = snapshot["dynamic_state"] if snapshot else {}
-        module_four.append(
-            f"- {entity['canonical_name']}（{entity.get('entity_type') or 'unknown'}，"
-            f"{snapshot['lifecycle_status'] if snapshot else 'active'}）"
-            f"位置：{state.get('current_location') or '未知'}"
-        )
-    module_sections["模块四：出场人物简表"] = module_four
-
-    module_five = ["### 模块五：主角高维面板"]
-    if protagonist_entity:
-        snapshot = get_snapshot(db, work_id, protagonist_entity["canonical_name"], at_chapter=chapter_index)
-        module_five.append(
-            f"- 硬设定：{json.dumps(protagonist_entity['hard_rules'], ensure_ascii=False)}"
-        )
-        module_five.append(
-            f"- 当前状态：{json.dumps(snapshot['dynamic_state'] if snapshot else {}, ensure_ascii=False)}"
-        )
-    else:
-        module_five.append("- （未设置主角）")
-    module_sections["模块五：主角高维面板"] = module_five
-
-    order = [
-        "模块一：题材与元规则",
-        "模块二：力量体系与金手指",
-        "模块三：地图与区域规则",
-        "模块四：出场人物简表",
-        "模块五：主角高维面板",
-        "模块六：派系与势力",
-        "模块七：活跃故事线",
-        "模块八：伏笔与认知盲区",
-        "模块九：已完结故事线",
+    modules = profile.get("archive_modules") or [
+        dict(module) for module in DEFAULT_ARCHIVE_MODULES
     ]
     sections: list[str] = []
-    for title in order:
-        sections.extend(module_sections.get(title, [f"### {title}", "- （暂无记录）"]))
+    for module in modules:
+        if not isinstance(module, dict):
+            continue
+        title = str(module.get("title") or "").strip() or "未命名模块"
+        kind = str(module.get("kind") or "records").strip()
+        category = str(module.get("category") or "").strip()
+        sections.append(f"### {title}")
+        if kind == "meta":
+            sections.append(f"- 类型：{profile.get('genre') or '未设置'}")
+            sections.append(f"- 世界背景：{profile.get('world_summary') or '未设置'}")
+        elif kind == "characters":
+            for entity in matched[:20]:
+                snapshot = get_snapshot(
+                    db, work_id, entity["canonical_name"], at_chapter=chapter_index,
+                )
+                state = snapshot["dynamic_state"] if snapshot else {}
+                sections.append(
+                    f"- {entity['canonical_name']}（{entity.get('entity_type') or 'unknown'}，"
+                    f"{snapshot['lifecycle_status'] if snapshot else 'active'}）"
+                    f"位置：{state.get('current_location') or '未知'}"
+                )
+            if not matched:
+                sections.append("- （本章未匹配到人物）")
+        elif kind == "protagonist":
+            if protagonist_entity:
+                snapshot = get_snapshot(
+                    db, work_id, protagonist_entity["canonical_name"],
+                    at_chapter=chapter_index,
+                )
+                sections.append(
+                    f"- 硬设定：{json.dumps(protagonist_entity['hard_rules'], ensure_ascii=False)}"
+                )
+                sections.append(
+                    f"- 当前状态：{json.dumps(snapshot['dynamic_state'] if snapshot else {}, ensure_ascii=False)}"
+                )
+            else:
+                sections.append("- （未设置主角）")
+        elif kind == "records":
+            records = list_story_records(
+                db, work_id, category=category or None, at_chapter=chapter_index,
+            )
+            if category == "foreshadow":
+                unrevealed = [
+                    record for record in records
+                    if not record["payload"].get("is_revealed")
+                ]
+                if unrevealed:
+                    for record in unrevealed:
+                        payload = record["payload"]
+                        surface = (
+                            payload.get("surface_action") or payload.get("surface")
+                            or "反派按表象行动"
+                        )
+                        blind = (
+                            payload.get("protagonist_blind_spot")
+                            or "主角当前不知情，严禁写主角起疑"
+                        )
+                        sections.append(
+                            f"- [反派表象行为：{surface}；主角认知盲区锁：{blind}]"
+                        )
+                else:
+                    sections.append("- （暂无未揭穿伏笔）")
+            elif records:
+                for record in records:
+                    sections.append(
+                        f"- {json.dumps(record['payload'], ensure_ascii=False)}"
+                    )
+            else:
+                sections.append("- （暂无记录）")
+            if category == "active_storyline":
+                for timer in list_story_records(
+                    db, work_id, category="timer", at_chapter=chapter_index,
+                ):
+                    sections.append(
+                        f"- 倒计时：{timer['payload'].get('name')} "
+                        f"剩余 {timer['payload'].get('chapters_remaining')} 章"
+                    )
+        else:
+            sections.append("- （未知模块类型）")
 
     previous = ""
     with db.connection() as connection:
