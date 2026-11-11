@@ -1,5 +1,7 @@
 # 提示词融入知识库：设计与风险
 
+> 2026-11-11 更新：当前执行约束见 [architecture-contract.md](architecture-contract.md)，需求状态见 [requirements-status.md](requirements-status.md)。本文保留设计背景与风险清单。
+
 输入规格：
 
 - `提取细纲.txt`：章节级剧情记忆
