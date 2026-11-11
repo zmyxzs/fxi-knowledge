@@ -54,12 +54,12 @@
 | 记忆提示词故事分类 | 固定 10 类 | 从 `work_profile.story_categories` 注入 |
 | 编译九模块 | `_MODULES` 写死标题/顺序 | 从 `work_profile.archive_modules` 读取 |
 | 查询同义词 | `_QUERY_SYNONYMS` 固定玄幻词 | 从 `work_profile.glossary` 注入，按请求作用域生效 |
+| `work_type` | 只允许 `writing`/`deconstruct` | `kb_work_type` 注册表 + `/api/work_types` |
 
 ### 2.2 尚未治理
 
 | 位置 | 硬编码 | 风险 | 建议 |
 |---|---|---|---|
-| `archive.py` `work_type` | 只允许 `writing`/`deconstruct` | 未来可能有“同人”“剧本”等 | 改成可注册的 workflow 类型 |
 | `archive.py` 审计动词 | `花了/花费/花掉/支付/消耗` | 其他表达漏检 | 语言模式配置，或改用结构化 state_changes |
 | `archive.py` 拆书占位符 | `[主角]/[反派A]/[配角B]` | 其他拆书模板不同 | 占位符配置 |
 | `kb_server.py` 默认空间 | `space="writing"` / `branch="main"` | 多空间时需显式 | 保持默认，但客户端应显式传 |
@@ -133,6 +133,13 @@
 ```
 
 `resource_units`、`entity_types`、`story_categories`、`archive_modules`、`glossary` 均已实现，`/api/work_profile` 可直接写入。
+
+`work_type` 也不再是硬枚举：
+
+```text
+GET  /api/work_types
+POST /api/work_types {"work_type":"fanfic","label":"同人","description":"同人创作"}
+```
 
 ```json
 {

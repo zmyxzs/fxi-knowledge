@@ -30,6 +30,12 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     archive_modules_json TEXT NOT NULL DEFAULT '[]',
     glossary_json TEXT NOT NULL DEFAULT '[]'
 );
+CREATE TABLE IF NOT EXISTS kb_work_type (
+    work_type TEXT PRIMARY KEY,
+    label TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kb_source_meta (
     source_id TEXT PRIMARY KEY,
     work_id TEXT NOT NULL,
@@ -71,6 +77,17 @@ CREATE TABLE IF NOT EXISTS kb_story_record (
 def ensure_schema(db: Any) -> None:
     with db.transaction() as connection:
         connection.executescript(_SCHEMA)
+        for work_type, label, description in (
+            ("writing", "连载创作", "章节连载、状态快照与防吃书"),
+            ("deconstruct", "拆书", "提取去名化骨架与文风锚点"),
+        ):
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO kb_work_type(work_type, label, description, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (work_type, label, description, _now()),
+            )
     with db.transaction() as connection:
         columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(kb_work_profile)")
@@ -116,6 +133,42 @@ def ensure_schema(db: Any) -> None:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def list_work_types(db: Any) -> list[dict]:
+    with db.connection() as connection:
+        rows = connection.execute(
+            "SELECT work_type, label, description, created_at FROM kb_work_type ORDER BY work_type"
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def get_work_type(db: Any, work_type: str) -> dict | None:
+    with db.connection() as connection:
+        row = connection.execute(
+            "SELECT work_type, label, description, created_at FROM kb_work_type WHERE work_type = ?",
+            (work_type,),
+        ).fetchone()
+    return dict(row) if row is not None else None
+
+
+def register_work_type(
+    db: Any, work_type: str, *, label: str = "", description: str = "",
+) -> dict:
+    value = work_type.strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{1,31}", value):
+        raise ValueError("work_type must match [a-z][a-z0-9_-]{1,31}")
+    with db.transaction() as connection:
+        connection.execute(
+            """
+            INSERT INTO kb_work_type(work_type, label, description, created_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(work_type) DO UPDATE SET
+                label=excluded.label, description=excluded.description
+            """,
+            (value, label.strip(), description.strip(), _now()),
+        )
+    return get_work_type(db, value) or {}
 
 
 DEFAULT_ARCHIVE_MODULES: tuple[dict[str, str], ...] = (
@@ -182,8 +235,10 @@ def set_work_profile(
     archive_modules: list[dict] | None = None,
     glossary: list[dict] | None = None,
 ) -> dict:
-    if work_type not in {"writing", "deconstruct"}:
-        raise ValueError("work_type must be writing or deconstruct")
+    if get_work_type(db, work_type) is None:
+        raise ValueError(
+            f"unknown work_type: {work_type}; register it via /api/work_types first"
+        )
     existing = get_work_profile(db, work_id)
     if resource_units is None:
         resource_units = existing.get("resource_units") or []

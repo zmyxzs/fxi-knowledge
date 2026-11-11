@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from fxi_novel.knowledge import archive, archive_extraction
 from fxi_novel.storage.database import Database
 
@@ -405,4 +407,16 @@ def test_apply_memory_output_writes_memory_records(tmp_path) -> None:
     assert archive.list_story_records(db, "w1", category="fact")
     assert archive.list_story_records(db, "w1", category="scene")
     assert archive.list_story_records(db, "w1", category="thread")
+    db.close()
+
+
+def test_work_type_registry_and_custom_profile(tmp_path) -> None:
+    db = _db(tmp_path)
+    types = {row["work_type"] for row in archive.list_work_types(db)}
+    assert {"writing", "deconstruct"} <= types
+    archive.register_work_type(db, "fanfic", label="同人", description="同人创作")
+    profile = archive.set_work_profile(db, "w1", work_type="fanfic")
+    assert profile["work_type"] == "fanfic"
+    with pytest.raises(ValueError):
+        archive.set_work_profile(db, "w2", work_type="unknown")
     db.close()

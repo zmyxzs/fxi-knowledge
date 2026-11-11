@@ -201,8 +201,10 @@ print(client.audit("示例作品", llm=True))
 | POST | `/api/works` | 创建 `{title, description}` |
 | PUT | `/api/works/{id}` | 修改 `{title, description}` |
 | DELETE | `/api/works/{id}` | 删除（含章节、快照、解析记录） |
+| GET | `/api/work_types` | 作品类型注册表 |
+| POST | `/api/work_types` | 注册类型 `{work_type, label, description}` |
 | GET | `/api/work_profile?work=` | 作品画像 |
-| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name}` |
+| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary}` |
 
 ### 4.3 章节
 

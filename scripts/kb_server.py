@@ -234,6 +234,17 @@ class KnowledgeServer:
             for row in self.knowledge.list_projects(space=self.space)
         ]
 
+    def work_types(self) -> dict:
+        return {"work_types": archive.list_work_types(self.db)}
+
+    def register_work_type(self, body: dict) -> dict:
+        return archive.register_work_type(
+            self.db,
+            str(body.get("work_type") or ""),
+            label=str(body.get("label") or ""),
+            description=str(body.get("description") or ""),
+        )
+
     def resolve_work(self, title: str | None) -> dict:
         works = self.works()
         if not works:
@@ -1009,6 +1020,9 @@ def handler_for(server: KnowledgeServer):
                 if parsed.path == "/api/works":
                     self._json({"works": server.works()})
                     return
+                if parsed.path == "/api/work_types":
+                    self._json(server.work_types())
+                    return
                 if parsed.path == "/api/search":
                     query = (params.get("q") or "").strip()
                     if not query:
@@ -1097,6 +1111,9 @@ def handler_for(server: KnowledgeServer):
                         str(body.get("title") or ""),
                         str(body.get("description") or ""),
                     ), 201)
+                    return
+                if method == "POST" and parts == ["api", "work_types"]:
+                    self._json(server.register_work_type(body), 201)
                     return
                 if method == "POST" and parts == ["api", "sources"]:
                     chapter = body.get("chapter_index")
