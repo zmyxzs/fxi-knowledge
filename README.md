@@ -4,7 +4,7 @@
 
 **使用文档**：[知识库系统使用文档](docs/knowledge-base-guide.md) · [API 速查](docs/api-usage.md) · [Swagger](https://kg.zmteams.site/swagger)  
 **架构与路线**：[统一架构](docs/architecture-contract.md) · [简化方案](docs/simplification-plan.md) · [需求状态](docs/requirements-status.md) · [补丁债务](docs/patch-debt.md)  
-**问题与兼容**：[历史问题](docs/history-problems-solutions.md) · [兼容性矩阵](docs/compatibility-matrix.md) · [AI 评审](docs/ai-assisted-review.md)
+**问题与兼容**：[历史问题](docs/history-problems-solutions.md) · [兼容性矩阵](docs/compatibility-matrix.md) · [AI 评审](docs/ai-assisted-review.md) · [效率质量](docs/efficiency-quality.md)
 
 - 抽取时间：2026-10-23
 - 来源：`D:\Projects\Fxi-novel` 工作区（含未提交改动）在抽取时的状态
