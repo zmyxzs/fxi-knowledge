@@ -265,6 +265,48 @@ def test_reserve_source_meta_rejects_duplicate_chapter(tmp_path) -> None:
     db.close()
 
 
+def test_work_profile_taxonomy_roundtrip(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1",
+        resource_units=["灵石"],
+        entity_types=["人物", "地点", "物品"],
+        story_categories=["伏笔", "线索"],
+    )
+    profile = archive.get_work_profile(db, "w1")
+    assert profile["entity_types"] == ["人物", "地点", "物品"]
+    assert profile["story_categories"] == ["伏笔", "线索"]
+    assert profile["resource_units"] == ["灵石"]
+    db.close()
+
+
+def test_memory_prompt_uses_work_taxonomy() -> None:
+    messages = archive_extraction.build_memory_messages(
+        "正文", 1,
+        entity_types=["人物", "地点"],
+        story_categories=["伏笔", "线索"],
+    )
+    prompt = messages[0]["content"]
+    assert "人物|地点" in prompt
+    assert "伏笔, 线索" in prompt
+
+
+def test_apply_memory_output_filters_records_by_category(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_memory_output(
+        db, "w1", 1,
+        {"records": [
+            {"category": "伏笔", "payload": {"x": 1}},
+            {"category": "未知", "payload": {"x": 2}},
+        ]},
+        allowed_categories=["伏笔"],
+    )
+    assert result["records"] == 1
+    assert archive.list_story_records(db, "w1", category="伏笔")
+    assert not archive.list_story_records(db, "w1", category="未知")
+    db.close()
+
+
 def test_ledger_number_parses_chinese_and_digits() -> None:
     assert archive_extraction._ledger_number("600") == 600
     assert archive_extraction._ledger_number("六百铜钱") == 600

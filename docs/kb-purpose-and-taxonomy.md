@@ -50,6 +50,8 @@
 | `archive.py` 初稿审计 | 正则只认 `铜钱|灵石` | 从 `work_profile.resource_units` 或账本现有键生成单位 |
 | `archive_extraction.py` 提示词示例 | 示例固定“铜钱” | 改为 `<资源名>`，由作品配置决定 |
 | `archive.py` 工作画像 | 无资源单位字段 | 新增 `resource_units`（JSON 数组） |
+| 记忆提示词实体类型 | 固定 5 类 | 从 `work_profile.entity_types` 注入 |
+| 记忆提示词故事分类 | 固定 10 类 | 从 `work_profile.story_categories` 注入 |
 
 ### 2.2 尚未治理
 
@@ -57,7 +59,6 @@
 |---|---|---|---|
 | `archive.py` `_MODULES` | 九模块标题与 `power_and_laws` 等 category | 换题材/换档案模板就不适用 | 模块 schema 存配置，按 `work_type` 选 |
 | `archive.py` `work_type` | 只允许 `writing`/`deconstruct` | 未来可能有“同人”“剧本”等 | 改成可注册的 workflow 类型 |
-| `archive_extraction.py` 记忆提示词 | 实体类型 `character/location/item/organization/concept` | 不同题材分类不同 | 从 `work_profile.entity_types` 注入 |
 | `tokenizer.py` 查询同义词 | `数值/身体/提升/功法/属性/增幅/等级` | 只适合玄幻 | 改成作品级 glossary |
 | `archive.py` 审计动词 | `花了/花费/花掉/支付/消耗` | 其他表达漏检 | 语言模式配置，或改用结构化 state_changes |
 | `archive.py` 拆书占位符 | `[主角]/[反派A]/[配角B]` | 其他拆书模板不同 | 占位符配置 |
@@ -131,7 +132,7 @@
 }
 ```
 
-`resource_units` 已实现；`entity_types` / `story_categories` 建议下一步接入。
+`resource_units`、`entity_types`、`story_categories` 均已实现，`/api/work_profile` 可直接写入。
 
 ---
 

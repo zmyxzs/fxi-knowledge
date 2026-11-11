@@ -389,19 +389,39 @@ def apply_output(db: Any, work_id: str, chapter_index: int, output: dict) -> dic
         "story_records": records,
         "summary": output.get("chapter_summary"),
     }
+DEFAULT_ENTITY_TYPES = ("character", "location", "item", "organization", "concept")
+DEFAULT_STORY_CATEGORIES = (
+    "power_and_laws", "map", "faction", "active_storyline", "foreshadow",
+    "completed_storylines", "trope_skeleton", "style_anchor", "timer", "redline",
+)
+
 MEMORY_PROMPT = """你是小说记忆抽取器。只输出一个 JSON 对象，不要解释、不要 Markdown。
 格式：
-{"entities":[{"name":"标准名","type":"character|location|item|organization|concept","aliases":[]}],
+{"entities":[{"name":"标准名","type":"__ENTITY_TYPES__","aliases":[]}],
  "facts":[{"entity":"实体名","field":"属性","value":"值","evidence":"原文短句"}],
  "state_changes":[{"entity":"实体名","kind":"resource|state","field":"字段或资源名","from":"旧值","to":"新值","evidence":"原文短句"}],
  "scenes":[{"summary":"一段完整因果","participants":["实体名"],"evidence":"原文短句"}],
- "threads":[{"name":"线程名","transition":"new|advanced|blocked|resolved","evidence":"原文短句"}]}
-规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；threads 只写跨章仍有影响的问题；没有就空数组。"""
+ "threads":[{"name":"线程名","transition":"new|advanced|blocked|resolved","evidence":"原文短句"}],
+ "records":[{"category":"__STORY_CATEGORIES__","payload":{}}]}
+规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；threads 只写跨章仍有影响的问题；records.category 必须是给定分类之一；没有就空数组。"""
 
 
-def build_memory_messages(text: str, chapter_index: int) -> list[dict[str, str]]:
+def build_memory_messages(
+    text: str,
+    chapter_index: int,
+    *,
+    entity_types: list[str] | None = None,
+    story_categories: list[str] | None = None,
+) -> list[dict[str, str]]:
+    types = "|".join(entity_types or DEFAULT_ENTITY_TYPES)
+    categories = ", ".join(story_categories or DEFAULT_STORY_CATEGORIES)
+    prompt = (
+        MEMORY_PROMPT
+        .replace("__ENTITY_TYPES__", types)
+        .replace("__STORY_CATEGORIES__", categories)
+    )
     return [
-        {"role": "system", "content": MEMORY_PROMPT},
+        {"role": "system", "content": prompt},
         {"role": "user", "content": json.dumps(
             {"chapter_index": chapter_index, "text": text[:12000]},
             ensure_ascii=False,
@@ -416,6 +436,8 @@ async def extract_memory_with_openai(
     base_url: str,
     api_key: str,
     model: str,
+    entity_types: list[str] | None = None,
+    story_categories: list[str] | None = None,
     timeout: float = 120.0,
 ) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
@@ -425,7 +447,11 @@ async def extract_memory_with_openai(
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": _merge_system(build_memory_messages(text, chapter_index)),
+                "messages": _merge_system(build_memory_messages(
+                    text, chapter_index,
+                    entity_types=entity_types,
+                    story_categories=story_categories,
+                )),
                 "temperature": 0,
                 "response_format": {"type": "json_object"},
             },
@@ -468,6 +494,7 @@ def _ledger_number(value: Any) -> int | None:
 
 def apply_memory_output(
     db: Any, work_id: str, chapter_index: int, output: dict,
+    *, allowed_categories: list[str] | None = None,
 ) -> dict:
     from . import archive
 
@@ -538,6 +565,18 @@ def apply_memory_output(
         archive.add_story_record(db, work_id, "thread", thread, chapter_index=chapter_index)
         for thread in (output.get("threads") or []) if isinstance(thread, dict)
     ]
+    allowed = {str(category) for category in (allowed_categories or [])}
+    records = []
+    for record in output.get("records") or []:
+        if not isinstance(record, dict):
+            continue
+        category = str(record.get("category") or "").strip()
+        if not category or (allowed and category not in allowed):
+            continue
+        records.append(archive.add_story_record(
+            db, work_id, category, record.get("payload") or {},
+            chapter_index=chapter_index,
+        ))
     return {
         "chapter_index": chapter_index,
         "entities": applied_entities,
@@ -545,4 +584,5 @@ def apply_memory_output(
         "facts": len(facts),
         "scenes": len(scenes),
         "threads": len(threads),
+        "records": len(records),
     }

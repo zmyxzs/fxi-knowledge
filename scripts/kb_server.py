@@ -369,12 +369,15 @@ class KnowledgeServer:
 
     def set_work_profile(self, work: str | None, body: dict) -> dict:
         row = self.resolve_work(work)
-        units = body.get("resource_units")
-        if units is not None and (
-            not isinstance(units, list)
-            or any(not isinstance(unit, str) for unit in units)
-        ):
-            raise ValueError("resource_units must be a list of strings")
+        lists: dict[str, list[str] | None] = {}
+        for key in ("resource_units", "entity_types", "story_categories"):
+            values = body.get(key)
+            if values is not None and (
+                not isinstance(values, list)
+                or any(not isinstance(item, str) for item in values)
+            ):
+                raise ValueError(f"{key} must be a list of strings")
+            lists[key] = [str(item) for item in values] if values else None
         return {
             "work": row["title"],
             **archive.set_work_profile(
@@ -383,7 +386,9 @@ class KnowledgeServer:
                 genre=body.get("genre"),
                 world_summary=body.get("world_summary"),
                 protagonist_name=body.get("protagonist_name"),
-                resource_units=[str(unit) for unit in units] if units else None,
+                resource_units=lists["resource_units"],
+                entity_types=lists["entity_types"],
+                story_categories=lists["story_categories"],
             ),
         }
 
@@ -777,6 +782,7 @@ class KnowledgeServer:
     ) -> dict:
         if not (self.llm_base_url and self.llm_api_key and self.llm_model):
             return {"status": "skipped", "mode": "memory", "reason": "LLM is not configured"}
+        profile = archive.get_work_profile(self.db, row["id"])
         chapters = []
         try:
             for source_id in ids:
@@ -800,9 +806,12 @@ class KnowledgeServer:
                     base_url=self.llm_base_url,
                     api_key=self.llm_api_key,
                     model=self.llm_model,
+                    entity_types=profile.get("entity_types"),
+                    story_categories=profile.get("story_categories"),
                 )
                 chapters.append(archive_extraction.apply_memory_output(
                     self.db, row["id"], chapter_index, output,
+                    allowed_categories=profile.get("story_categories"),
                 ))
             return {"status": "completed", "mode": "memory", "chapters": chapters}
         except Exception as exc:  # noqa: BLE001 - surface on the job

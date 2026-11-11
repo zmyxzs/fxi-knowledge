@@ -24,7 +24,9 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     genre TEXT,
     world_summary TEXT,
     protagonist_name TEXT,
-    resource_units_json TEXT NOT NULL DEFAULT '[]'
+    resource_units_json TEXT NOT NULL DEFAULT '[]',
+    entity_types_json TEXT NOT NULL DEFAULT '["character","location","item","organization","concept"]',
+    story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]'
 );
 CREATE TABLE IF NOT EXISTS kb_source_meta (
     source_id TEXT PRIMARY KEY,
@@ -75,6 +77,18 @@ def ensure_schema(db: Any) -> None:
             connection.execute(
                 "ALTER TABLE kb_work_profile ADD COLUMN resource_units_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "entity_types_json" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN entity_types_json TEXT NOT NULL "
+                "DEFAULT '[\"character\",\"location\",\"item\",\"organization\",\"concept\"]'"
+            )
+        if "story_categories_json" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN story_categories_json TEXT NOT NULL "
+                "DEFAULT '[\"power_and_laws\",\"map\",\"faction\",\"active_storyline\","
+                "\"foreshadow\",\"completed_storylines\",\"trope_skeleton\","
+                "\"style_anchor\",\"timer\",\"redline\"]'"
+            )
     try:
         with db.transaction() as connection:
             connection.execute(
@@ -103,29 +117,46 @@ def set_work_profile(
     world_summary: str | None = None,
     protagonist_name: str | None = None,
     resource_units: list[str] | None = None,
+    entity_types: list[str] | None = None,
+    story_categories: list[str] | None = None,
 ) -> dict:
     if work_type not in {"writing", "deconstruct"}:
         raise ValueError("work_type must be writing or deconstruct")
+    existing = get_work_profile(db, work_id)
     if resource_units is None:
-        resource_units = get_work_profile(db, work_id).get("resource_units") or []
-    resource_json = json.dumps(
-        sorted({str(unit).strip() for unit in resource_units if str(unit).strip()}),
-        ensure_ascii=False,
-    )
+        resource_units = existing.get("resource_units") or []
+    if entity_types is None:
+        entity_types = existing.get("entity_types") or []
+    if story_categories is None:
+        story_categories = existing.get("story_categories") or []
+
+    def clean(values: list[str]) -> list[str]:
+        return list(dict.fromkeys(
+            str(value).strip() for value in values if str(value).strip()
+        ))
+
     with db.transaction() as connection:
         connection.execute(
             """
             INSERT INTO kb_work_profile(
-                work_id, work_type, genre, world_summary, protagonist_name, resource_units_json
+                work_id, work_type, genre, world_summary, protagonist_name,
+                resource_units_json, entity_types_json, story_categories_json
             )
-            VALUES (?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
                 protagonist_name=excluded.protagonist_name,
-                resource_units_json=excluded.resource_units_json
+                resource_units_json=excluded.resource_units_json,
+                entity_types_json=excluded.entity_types_json,
+                story_categories_json=excluded.story_categories_json
             """,
-            (work_id, work_type, genre, world_summary, protagonist_name, resource_json),
+            (
+                work_id, work_type, genre, world_summary, protagonist_name,
+                json.dumps(clean(resource_units), ensure_ascii=False),
+                json.dumps(clean(entity_types), ensure_ascii=False),
+                json.dumps(clean(story_categories), ensure_ascii=False),
+            ),
         )
     return get_work_profile(db, work_id)
 
@@ -139,9 +170,19 @@ def get_work_profile(db: Any, work_id: str) -> dict:
         return {
             "work_id": work_id, "work_type": "writing", "genre": None,
             "world_summary": None, "protagonist_name": None, "resource_units": [],
+            "entity_types": ["character", "location", "item", "organization", "concept"],
+            "story_categories": [
+                "power_and_laws", "map", "faction", "active_storyline",
+                "foreshadow", "completed_storylines", "trope_skeleton",
+                "style_anchor", "timer", "redline",
+            ],
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
+    profile["entity_types"] = json.loads(profile.pop("entity_types_json", "[]") or "[]")
+    profile["story_categories"] = json.loads(
+        profile.pop("story_categories_json", "[]") or "[]"
+    )
     return profile
 
 
