@@ -12,6 +12,7 @@ import contextlib
 import hmac
 import importlib.util
 import json
+import logging
 import os
 import sys
 import threading
@@ -34,6 +35,8 @@ from fxi_novel.knowledge.service import KnowledgeService
 from fxi_novel.models.gateway import GatewayConfig, ModelGateway, ModelRoute
 from fxi_novel.project_paths import project_root
 from fxi_novel.storage.database import Database
+
+logger = logging.getLogger(__name__)
 
 INDEX_HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -544,14 +547,17 @@ class KnowledgeServer:
         result = self.knowledge.add_text_source(
             title=title.strip(), content=content, space=self.space, work_id=row["id"],
         )
-        chapter = chapter_index or archive.next_chapter_index(self.db, row["id"])
-        archive.set_source_meta(
-            self.db, result.source_id, row["id"],
-            chapter_index=int(chapter),
-            outline_raw=outline_raw,
-            content_raw=content_raw or content,
-            content_polished=content_polished or content,
-        )
+        try:
+            chapter = archive.reserve_source_meta(
+                self.db, result.source_id, row["id"],
+                chapter_index=chapter_index,
+                outline_raw=outline_raw,
+                content_raw=content_raw or content,
+                content_polished=content_polished or content,
+            )
+        except ValueError:
+            self.knowledge.delete_source(result.source_id)
+            raise
         return {
             "id": result.source_id,
             "title": title.strip(),
@@ -618,6 +624,7 @@ class KnowledgeServer:
             timeout_seconds=300,
             reasoning_effort="none",
             max_output_tokens=16000,
+            merge_system_prompt=True,
         )
 
     def _narrative_reader(self, work_id: str):
@@ -629,7 +636,7 @@ class KnowledgeServer:
 
     def start_parse(
         self, work: str | None, source_ids: list[str] | None,
-        *, mode: str = "state_update",
+        *, mode: str = "state_update", force: bool = False,
     ) -> dict:
         if mode not in {"state_update", "deconstruct_extract"}:
             raise ValueError("mode must be state_update or deconstruct_extract")
@@ -648,6 +655,7 @@ class KnowledgeServer:
             "id": job_id, "status": "queued", "work": row["title"],
             "sources": ids, "batch_id": None, "error": None, "summary": None,
             "progress": None, "mode": mode, "archive": None,
+            "force": force,
         }
         self._save_jobs()
         threading.Thread(
@@ -665,6 +673,7 @@ class KnowledgeServer:
         try:
             asyncio.run(self._parse_async(job_id, row, ids))
         except Exception as exc:  # noqa: BLE001 - surface to the job status
+            logger.exception("parse job %s failed", job_id)
             self._update_job(
                 job_id, status="failed", error=f"{type(exc).__name__}: {exc}",
             )
@@ -696,7 +705,7 @@ class KnowledgeServer:
             space=self.space, work_id=row["id"], folder_id=None,
             source_ids=ids, branch_id=self.branch,
             max_concurrency=self.parse_concurrency,
-            force_reparse=False,
+            force_reparse=bool(self.jobs.get(job_id, {}).get("force")),
         )
         self._update_job(job_id, status="running", batch_id=batch["batch_id"])
         watcher = asyncio.create_task(
@@ -710,17 +719,40 @@ class KnowledgeServer:
                 await watcher
         final = knowledge.get_knowledge_parse_batch(batch["batch_id"])
         status = final.get("status") or "failed"
+        diagnostic = (
+            self._batch_diagnostic(batch["batch_id"]) if status != "completed" else None
+        )
         self._update_job(
             job_id,
             status="completed" if status == "completed" else status,
             summary=final.get("stage_summary"),
+            error=diagnostic,
         )
         mode = self.jobs.get(job_id, {}).get("mode") or "state_update"
-        self._update_job(job_id, archive={"status": "running", "mode": mode})
-        archive_result = await self._run_archive_update(job_id, knowledge, row, ids, mode)
-        self._update_job(job_id, archive=archive_result)
+        if status == "completed":
+            self._update_job(job_id, archive={"status": "running", "mode": mode})
+            archive_result = await self._run_archive_update(job_id, knowledge, row, ids, mode)
+            self._update_job(job_id, archive=archive_result)
+        else:
+            self._update_job(job_id, archive={
+                "status": "skipped",
+                "mode": mode,
+                "reason": diagnostic or status,
+            })
         await gateway.aclose()
         db.close()
+
+    def _batch_diagnostic(self, batch_id: str) -> str | None:
+        with self.db.connection() as connection:
+            row = connection.execute(
+                """
+                SELECT diagnostic FROM knowledge_parse_batch_item
+                WHERE batch_id = ? AND diagnostic IS NOT NULL AND diagnostic != ''
+                ORDER BY ordinal LIMIT 1
+                """,
+                (batch_id,),
+            ).fetchone()
+        return str(row[0]) if row is not None else None
 
     async def _run_archive_update(
         self, job_id: str, knowledge: Any, row: dict, ids: list[str], mode: str,
@@ -1014,6 +1046,7 @@ def handler_for(server: KnowledgeServer):
                     self._json(server.start_parse(
                         body.get("work"), [str(item) for item in ids] if ids else None,
                         mode=str(body.get("mode") or "state_update"),
+                        force=bool(body.get("force")),
                     ), 202)
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "works"]:

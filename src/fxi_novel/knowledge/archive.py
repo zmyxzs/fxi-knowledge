@@ -8,10 +8,14 @@ lazily on first use (``CREATE TABLE IF NOT EXISTS``).
 from __future__ import annotations
 
 import json
+import logging
 import re
+import sqlite3
 import uuid
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS kb_work_profile (
@@ -62,6 +66,19 @@ CREATE TABLE IF NOT EXISTS kb_story_record (
 def ensure_schema(db: Any) -> None:
     with db.transaction() as connection:
         connection.executescript(_SCHEMA)
+    try:
+        with db.transaction() as connection:
+            connection.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_source_meta_work_chapter
+                ON kb_source_meta(work_id, chapter_index)
+                WHERE chapter_index IS NOT NULL
+                """
+            )
+    except sqlite3.IntegrityError:
+        logger.warning(
+            "kb_source_meta has duplicate (work_id, chapter_index); unique index skipped"
+        )
 
 
 def _now() -> str:
@@ -148,6 +165,43 @@ def next_chapter_index(db: Any, work_id: str) -> int:
             (work_id,),
         ).fetchone()
     return int(row[0] or 0) + 1
+
+
+def reserve_source_meta(
+    db: Any,
+    source_id: str,
+    work_id: str,
+    *,
+    chapter_index: int | None = None,
+    outline_raw: str | None = None,
+    content_raw: str | None = None,
+    content_polished: str | None = None,
+) -> int:
+    """Allocate a chapter index and insert the source meta in one transaction."""
+    with db.transaction() as connection:
+        if chapter_index is None:
+            row = connection.execute(
+                "SELECT COALESCE(MAX(chapter_index), 0) + 1 FROM kb_source_meta WHERE work_id = ?",
+                (work_id,),
+            ).fetchone()
+            chapter_index = int(row[0])
+        try:
+            connection.execute(
+                """
+                INSERT INTO kb_source_meta(
+                    source_id, work_id, chapter_index, outline_raw, content_raw, content_polished
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id, work_id, int(chapter_index),
+                    outline_raw, content_raw, content_polished,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"chapter_index {chapter_index} already exists for this work"
+            ) from exc
+    return int(chapter_index)
 
 
 def resolve_entity(db: Any, work_id: str, name: str) -> dict | None:
@@ -412,6 +466,15 @@ def tick_timers(db: Any, work_id: str, chapter_index: int) -> list[dict]:
         ).fetchall()
         for row in rows:
             payload = json.loads(row["payload_json"] or "{}")
+            created = int(payload.get("created_chapter", 0) or 0)
+            if created >= chapter_index:
+                updated.append({
+                    "name": payload.get("name"),
+                    "chapters_remaining": payload.get("chapters_remaining"),
+                    "expired": False,
+                    "skipped": "created this chapter",
+                })
+                continue
             remaining = int(payload.get("chapters_remaining", 0)) - 1
             payload["chapters_remaining"] = remaining
             connection.execute(
@@ -482,7 +545,8 @@ def compile_archive(
                 matched.append(entity)
                 matched_names.add(related["name"])
 
-    sections: list[str] = [
+    module_sections: dict[str, list[str]] = {}
+    module_sections["模块一：题材与元规则"] = [
         "### 模块一：题材与元规则",
         f"- 类型：{profile.get('genre') or '未设置'}",
         f"- 世界背景：{profile.get('world_summary') or '未设置'}",
@@ -491,7 +555,7 @@ def compile_archive(
         records = list_story_records(
             db, work_id, category=category, at_chapter=chapter_index,
         )
-        sections.append(f"### {title}")
+        lines = [f"### {title}"]
         if category == "foreshadow":
             unrevealed = [
                 record for record in records
@@ -508,44 +572,64 @@ def compile_archive(
                         payload.get("protagonist_blind_spot")
                         or "主角当前不知情，严禁写主角起疑"
                     )
-                    sections.append(
+                    lines.append(
                         f"- [反派表象行为：{surface}；主角认知盲区锁：{blind}]"
                     )
             else:
-                sections.append("- （暂无未揭穿伏笔）")
+                lines.append("- （暂无未揭穿伏笔）")
         elif records:
             for record in records:
-                sections.append(f"- {json.dumps(record['payload'], ensure_ascii=False)}")
+                lines.append(f"- {json.dumps(record['payload'], ensure_ascii=False)}")
         else:
-            sections.append("- （暂无记录）")
+            lines.append("- （暂无记录）")
         if category == "active_storyline":
-            for timer in list_story_records(db, work_id, category="timer"):
-                sections.append(
+            for timer in list_story_records(
+                db, work_id, category="timer", at_chapter=chapter_index,
+            ):
+                lines.append(
                     f"- 倒计时：{timer['payload'].get('name')} "
                     f"剩余 {timer['payload'].get('chapters_remaining')} 章"
                 )
+        module_sections[title] = lines
 
-    sections.insert(4, "### 模块四：出场人物简表")
+    module_four = ["### 模块四：出场人物简表"]
     for entity in matched[:20]:
         snapshot = get_snapshot(db, work_id, entity["canonical_name"], at_chapter=chapter_index)
         state = snapshot["dynamic_state"] if snapshot else {}
-        sections.append(
+        module_four.append(
             f"- {entity['canonical_name']}（{entity.get('entity_type') or 'unknown'}，"
             f"{snapshot['lifecycle_status'] if snapshot else 'active'}）"
             f"位置：{state.get('current_location') or '未知'}"
         )
+    module_sections["模块四：出场人物简表"] = module_four
 
-    sections.insert(5, "### 模块五：主角高维面板")
+    module_five = ["### 模块五：主角高维面板"]
     if protagonist_entity:
         snapshot = get_snapshot(db, work_id, protagonist_entity["canonical_name"], at_chapter=chapter_index)
-        sections.append(
+        module_five.append(
             f"- 硬设定：{json.dumps(protagonist_entity['hard_rules'], ensure_ascii=False)}"
         )
-        sections.append(
+        module_five.append(
             f"- 当前状态：{json.dumps(snapshot['dynamic_state'] if snapshot else {}, ensure_ascii=False)}"
         )
     else:
-        sections.append("- （未设置主角）")
+        module_five.append("- （未设置主角）")
+    module_sections["模块五：主角高维面板"] = module_five
+
+    order = [
+        "模块一：题材与元规则",
+        "模块二：力量体系与金手指",
+        "模块三：地图与区域规则",
+        "模块四：出场人物简表",
+        "模块五：主角高维面板",
+        "模块六：派系与势力",
+        "模块七：活跃故事线",
+        "模块八：伏笔与认知盲区",
+        "模块九：已完结故事线",
+    ]
+    sections: list[str] = []
+    for title in order:
+        sections.extend(module_sections.get(title, [f"### {title}", "- （暂无记录）"]))
 
     previous = ""
     with db.connection() as connection:

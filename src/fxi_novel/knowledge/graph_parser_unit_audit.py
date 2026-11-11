@@ -349,4 +349,5 @@ class ParserUnitAuditRunner:
                 temperature=0,
                 json_mode=True,
                 response_schema=response_schema,
+                retry_invalid_output=True,
             )

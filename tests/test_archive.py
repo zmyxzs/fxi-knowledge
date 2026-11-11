@@ -189,3 +189,77 @@ def test_apply_output_merges_ledger_delta(tmp_path) -> None:
     assert "灵米" in snapshot["dynamic_state"]["inventory_ledger"]["items"]
     assert archive.list_story_records(db, "w1", category="active_storyline")
     db.close()
+
+
+def test_compile_archive_keeps_module_order(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", genre="玄幻", protagonist_name="杨凌")
+    for category in ("power_and_laws", "map", "faction", "active_storyline", "foreshadow"):
+        archive.add_story_record(db, "w1", category, {"k": category}, chapter_index=1)
+    markdown = archive.compile_archive(db, "w1", 2, "杨凌")["compiled_archive_markdown"]
+    headings = [line for line in markdown.splitlines() if line.startswith("### ")]
+    assert headings == [
+        "### 模块一：题材与元规则",
+        "### 模块二：力量体系与金手指",
+        "### 模块三：地图与区域规则",
+        "### 模块四：出场人物简表",
+        "### 模块五：主角高维面板",
+        "### 模块六：派系与势力",
+        "### 模块七：活跃故事线",
+        "### 模块八：伏笔与认知盲区",
+        "### 模块九：已完结故事线",
+    ]
+    db.close()
+
+
+def test_lifecycle_inherited_when_omitted(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.upsert_entity(db, "w1", "赵昆")
+    archive.write_snapshot(db, "w1", "赵昆", 1, lifecycle_status="dead")
+    archive_extraction.apply_output(db, "w1", 2, {
+        "entities": [{"name": "赵昆", "dynamic_state": {"current_location": "乱葬岗"}}],
+    })
+    assert archive.get_snapshot(db, "w1", "赵昆", at_chapter=2)["lifecycle_status"] == "dead"
+    db.close()
+
+
+def test_relations_merge_instead_of_replace(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(db, "w1", "杨凌", 1, cognition={
+        "relations": [{"target": "赵洵"}],
+    })
+    archive_extraction.apply_output(db, "w1", 2, {
+        "entities": [{
+            "name": "杨凌",
+            "cognition_and_relations": {"relations": [{"target": "马东"}]},
+        }],
+    })
+    relations = archive.get_snapshot(db, "w1", "杨凌", at_chapter=2)["cognition"]["relations"]
+    assert {row["target"] for row in relations} == {"赵洵", "马东"}
+    db.close()
+
+
+def test_timer_created_this_chapter_is_not_ticked(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive_extraction.apply_output(db, "w1", 2, {
+        "story_records": [{
+            "category": "timer", "payload": {"name": "解毒", "chapters_remaining": 3},
+        }],
+    })
+    assert archive.tick_timers(db, "w1", 2)[0]["chapters_remaining"] == 3
+    assert archive.tick_timers(db, "w1", 3)[0]["chapters_remaining"] == 2
+    db.close()
+
+
+def test_reserve_source_meta_rejects_duplicate_chapter(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.reserve_source_meta(db, "s1", "w1", chapter_index=1)
+    try:
+        archive.reserve_source_meta(db, "s2", "w1", chapter_index=1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("duplicate chapter_index must be rejected")
+    assert archive.next_chapter_index(db, "w1") == 2
+    db.close()

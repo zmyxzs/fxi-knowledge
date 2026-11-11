@@ -100,6 +100,7 @@ class ValidatedChatModel(Protocol):
         json_mode: bool = False,
         response_schema: dict[str, Any] | None = None,
         primary_timeout_seconds: float | None = None,
+        retry_invalid_output: bool = False,
     ) -> tuple[ChatResult, TValidated]: ...
 
 
@@ -124,6 +125,7 @@ class ModelRoute:
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    merge_system_prompt: bool = False
 
     def request_url(self, operation: str) -> str:
         if not self.enabled:
@@ -137,6 +139,23 @@ class ModelRoute:
         if token:
             return {"Authorization": f"Bearer {token}"}
         return {}
+
+
+def _merge_system_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """Fold system prompts into the first user message for providers that ignore system."""
+    system_parts = [
+        str(message.get("content") or "")
+        for message in messages if message.get("role") == "system"
+    ]
+    others = [message for message in messages if message.get("role") != "system"]
+    if not system_parts or not others:
+        return messages
+    merged: list[ChatMessage] = [{
+        "role": "user",
+        "content": "\n\n".join(system_parts) + "\n\n" + str(others[0].get("content") or ""),
+    }]
+    merged.extend(others[1:])
+    return merged
 
 
 def _route_reasoning_parameters(route: ModelRoute) -> dict[str, Any]:
@@ -633,6 +652,7 @@ class ModelGateway:
         json_mode: bool = False,
         response_schema: dict[str, Any] | None = None,
         primary_timeout_seconds: float | None = None,
+        retry_invalid_output: bool = False,
     ) -> tuple[ChatResult, TValidated]:
         """Try the configured route chain until a provider response passes validation.
 
@@ -652,69 +672,90 @@ class ModelGateway:
                 if index == 0 and primary_timeout_seconds is not None
                 else route
             )
-            # Domain audit sinks can wait for SQLite's writer. Keep that wait
-            # off the event loop so other concurrent parser tasks can finish.
-            await asyncio.to_thread(
-                start_validated_model_attempt, messages=messages, model=route.model, route_index=index,
-            )
-            try:
-                result = await self._chat_with_route(
-                    effective_route,
-                    messages,
-                    temperature=temperature,
-                    json_mode=json_mode,
-                    response_schema=response_schema,
-                    fallback_index=index,
-                    fallback_reason=fallback_reason,
+            attempt_messages = messages
+            route_failed = False
+            for attempt in range(2 if retry_invalid_output else 1):
+                # Domain audit sinks can wait for SQLite's writer. Keep that wait
+                # off the event loop so other concurrent parser tasks can finish.
+                await asyncio.to_thread(
+                    start_validated_model_attempt,
+                    messages=attempt_messages, model=route.model, route_index=index,
                 )
-            except (ModelUnavailable, httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
-                received = getattr(exc, "result", None)
-                if isinstance(received, ChatResult):
-                    await asyncio.to_thread(receive_validated_model_response,
-                        messages=messages, model=route.model, route_index=index, result=received,
+                try:
+                    result = await self._chat_with_route(
+                        effective_route,
+                        attempt_messages,
+                        temperature=temperature,
+                        json_mode=json_mode,
+                        response_schema=response_schema,
+                        fallback_index=index,
+                        fallback_reason=fallback_reason,
+                    )
+                except (ModelUnavailable, httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                    received = getattr(exc, "result", None)
+                    if isinstance(received, ChatResult):
+                        await asyncio.to_thread(receive_validated_model_response,
+                            messages=attempt_messages, model=route.model, route_index=index, result=received,
+                        )
+                        rejected_outputs.append(exc)
+                    else:
+                        received = None
+                    await asyncio.to_thread(record_validated_model_attempt,
+                        messages=attempt_messages, model=route.model, route_index=index, result=received, error=exc,
+                    )
+                    if index + 1 == len(routes):
+                        if rejected_outputs:
+                            raise ModelOutputRejected(
+                                "configured routes did not return contract-valid output"
+                            ) from rejected_outputs[-1]
+                        raise ModelUnavailable("all configured chat routes failed") from exc
+                    self._log_chat_fallback(route, routes[index + 1], exc)
+                    fallback_reason = _provider_error_type(exc)
+                    route_failed = True
+                    break
+
+                await asyncio.to_thread(receive_validated_model_response,
+                    messages=attempt_messages, model=route.model, route_index=index, result=result,
+                )
+                try:
+                    validated = validator(result)
+                except (ValueError, TypeError, KeyError) as exc:
+                    await asyncio.to_thread(record_validated_model_attempt,
+                        messages=attempt_messages, model=route.model, route_index=index, result=result, error=exc,
                     )
                     rejected_outputs.append(exc)
-                else:
-                    received = None
-                await asyncio.to_thread(record_validated_model_attempt,
-                    messages=messages, model=route.model, route_index=index, result=received, error=exc,
-                )
-                if index + 1 == len(routes):
-                    if rejected_outputs:
+                    if attempt == 0:
+                        attempt_messages = [
+                            *messages,
+                            {
+                                "role": "user",
+                                "content": (
+                                    "上一次响应未通过结构校验："
+                                    f"{str(exc)[:300]}。"
+                                    "请只输出符合要求的 JSON 对象，不要解释，也不要 Markdown 代码围栏。"
+                                ),
+                            },
+                        ]
+                        continue
+                    if index + 1 == len(routes):
                         raise ModelOutputRejected(
-                            "configured routes did not return contract-valid output"
-                        ) from rejected_outputs[-1]
-                    raise ModelUnavailable("all configured chat routes failed") from exc
-                self._log_chat_fallback(route, routes[index + 1], exc)
-                fallback_reason = _provider_error_type(exc)
-                continue
-
-            await asyncio.to_thread(receive_validated_model_response,
-                messages=messages, model=route.model, route_index=index, result=result,
-            )
-            try:
-                validated = validator(result)
-            except (ValueError, TypeError, KeyError) as exc:
+                            "all configured chat routes returned invalid output"
+                        ) from exc
+                    logger.warning(
+                        "Chat route '%s' output failed validation; trying configured fallback '%s' (%s)",
+                        route.model,
+                        routes[index + 1].model,
+                        type(exc).__name__,
+                    )
+                    fallback_reason = f"output_validation:{_provider_error_type(exc)}"
+                    route_failed = True
+                    break
                 await asyncio.to_thread(record_validated_model_attempt,
-                    messages=messages, model=route.model, route_index=index, result=result, error=exc,
+                    messages=attempt_messages, model=route.model, route_index=index, result=result,
                 )
-                rejected_outputs.append(exc)
-                if index + 1 == len(routes):
-                    raise ModelOutputRejected(
-                        "all configured chat routes returned invalid output"
-                    ) from exc
-                logger.warning(
-                    "Chat route '%s' output failed validation; trying configured fallback '%s' (%s)",
-                    route.model,
-                    routes[index + 1].model,
-                    type(exc).__name__,
-                )
-                fallback_reason = f"output_validation:{_provider_error_type(exc)}"
+                return result, validated
+            if route_failed:
                 continue
-            await asyncio.to_thread(record_validated_model_attempt,
-                messages=messages, model=route.model, route_index=index, result=result,
-            )
-            return result, validated
 
         raise ModelUnavailable("all configured chat routes failed")
 
@@ -814,6 +855,8 @@ class ModelGateway:
         json_mode: bool,
         response_schema: dict[str, Any] | None = None,
     ) -> ChatResult:
+        if route.merge_system_prompt:
+            messages = _merge_system_messages(messages)
         payload: dict[str, Any] = {"model": route.model, "messages": messages}
         payload.update(_route_reasoning_parameters(route))
         if temperature is not None:

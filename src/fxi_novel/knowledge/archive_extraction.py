@@ -90,7 +90,7 @@ async def extract_with_openai(
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": build_messages(text, entities, chapter_index),
+                "messages": _merge_system(build_messages(text, entities, chapter_index)),
                 "temperature": 0,
             },
         )
@@ -160,7 +160,7 @@ async def extract_deconstruct_with_openai(
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": build_deconstruct_messages(text, chapter_index),
+                "messages": _merge_system(build_deconstruct_messages(text, chapter_index)),
                 "temperature": 0,
             },
         )
@@ -274,13 +274,25 @@ async def audit_with_openai(
             headers={"Authorization": f"Bearer {api_key}"},
             json={
                 "model": model,
-                "messages": build_audit_messages(text, entities, redlines, chapter_index),
+                "messages": _merge_system(build_audit_messages(text, entities, redlines, chapter_index)),
                 "temperature": 0,
             },
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
     return parse_audit_output(content)
+
+
+def _merge_system(messages: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Fold system prompts into the first user message for providers that ignore system."""
+    system = [m["content"] for m in messages if m["role"] == "system"]
+    others = [m for m in messages if m["role"] != "system"]
+    if not system or not others:
+        return messages
+    return [
+        {"role": "user", "content": "\n\n".join(system) + "\n\n" + others[0]["content"]},
+        *others[1:],
+    ]
 
 
 def _merge_ledger(previous: dict, delta: dict) -> dict:
@@ -332,10 +344,24 @@ def apply_output(db: Any, work_id: str, chapter_index: int, output: dict) -> dic
         cognition = dict(previous["cognition"]) if previous else {}
         incoming = entry.get("cognition_and_relations")
         if isinstance(incoming, dict):
+            relations = incoming.get("relations")
+            if isinstance(relations, list):
+                merged = {
+                    str(relation.get("target")): relation
+                    for relation in (cognition.get("relations") or [])
+                    if isinstance(relation, dict) and relation.get("target")
+                }
+                for relation in relations:
+                    if isinstance(relation, dict) and relation.get("target"):
+                        merged[str(relation["target"])] = relation
+                incoming = {**incoming, "relations": list(merged.values())}
             cognition.update(incoming)
+        lifecycle = entry.get("lifecycle_status") or (
+            previous["lifecycle_status"] if previous else "active"
+        )
         snapshot = archive.write_snapshot(
             db, work_id, entity["canonical_name"], chapter_index,
-            lifecycle_status=str(entry.get("lifecycle_status") or "active"),
+            lifecycle_status=str(lifecycle),
             dynamic_state=dynamic,
             cognition=cognition,
         )
@@ -349,8 +375,11 @@ def apply_output(db: Any, work_id: str, chapter_index: int, output: dict) -> dic
     for record in output.get("story_records") or []:
         if not isinstance(record, dict) or not record.get("category"):
             continue
+        payload = dict(record.get("payload") or {})
+        if str(record["category"]) == "timer" and "created_chapter" not in payload:
+            payload["created_chapter"] = chapter_index
         records.append(archive.add_story_record(
-            db, work_id, str(record["category"]), record.get("payload") or {},
+            db, work_id, str(record["category"]), payload,
             chapter_index=chapter_index,
         ))
     return {
