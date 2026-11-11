@@ -202,6 +202,25 @@
 
 ---
 
+## 8. 2026-11-11 复审补充
+
+这一轮针对统一后的查询层又发现并修了 4 个问题：
+
+| 问题 | 根因 | 修法 | 测试 |
+|---|---|---|---|
+| `value=0` 被当成空 | `payload.get("value") or ...` | 用 `_first_present` 保留 0/False | `test_story_preserves_zero_value` |
+| 失败投影仍可被 `/api/story` 读到 | 只按记录查，不看文档状态 | `only_projected=True`，只读 active+done 工件 | `test_story_hides_failed_projection_records` |
+| 去重保留旧 memory 记录 | 去重排序按创建时间 | 有 `source_document_id` 的记录优先保留 | `test_dedupe_prefers_artifact_projection` |
+| 失败投影时清理旧记录 | 只看 active 文档 | 要求 `projection_status='done'` 才清理 | `test_drop_legacy_skips_failed_projection` |
+
+仍存在的结构性问题：
+
+- `_project_chapter_memory` 还不是单事务，投影中途失败可能留下部分记录
+- `documents` 列表没有分页
+- OpenAPI 中部分查询接口的 `work` 仍写成可选
+- offset 分页在写入期间不稳定
+- 核心分类与模块分类仍未完全统一
+
 ## 9. 后续原则
 
 1. 先定义契约，再写代码。

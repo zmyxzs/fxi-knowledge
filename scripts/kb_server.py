@@ -206,6 +206,14 @@ OPENAPI_SPEC: dict[str, Any] = {
 }
 
 
+def _first_present(mapping: dict, keys: tuple[str, ...]):
+    for key in keys:
+        value = mapping.get(key)
+        if value is not None and value != "":
+            return value
+    return ""
+
+
 class KnowledgeServer:
     def __init__(self, database: Path, *, space: str = "writing", branch: str = "main") -> None:
         self.database = database
@@ -388,11 +396,13 @@ class KnowledgeServer:
     ) -> dict:
         row = self.resolve_work(work)
         records = archive.list_story_records(
-            self.db, row["id"], category=category,
+            self.db, row["id"], category=category, only_projected=True,
         )
         if category and not records:
             records = [
-                record for record in archive.list_story_records(self.db, row["id"])
+                record for record in archive.list_story_records(
+                    self.db, row["id"], only_projected=True,
+                )
                 if record["payload"].get("graph_category") == category
             ]
         offset = max(0, int(offset))
@@ -404,18 +414,18 @@ class KnowledgeServer:
                 "category": record["category"],
                 "graph_category": payload.get("graph_category"),
                 "chapter_index": record["chapter_index"],
-                "subject": (
-                    payload.get("entity") or payload.get("holder")
-                    or payload.get("thread") or payload.get("name") or ""
+                "subject": _first_present(
+                    payload, ("entity", "holder", "thread", "name"),
                 ),
-                "predicate": (
-                    payload.get("field") or payload.get("kind")
-                    or record["category"]
-                ),
-                "value": (
-                    payload.get("value") or payload.get("to")
-                    or payload.get("content") or payload.get("causal_paragraph")
-                    or payload.get("next_condition") or ""
+                "predicate": _first_present(
+                    payload, ("field", "kind"),
+                ) or record["category"],
+                "value": _first_present(
+                    payload,
+                    (
+                        "value", "to", "content", "causal_paragraph",
+                        "next_condition", "amount", "quantity",
+                    ),
                 ),
                 "quote": payload.get("evidence"),
             })

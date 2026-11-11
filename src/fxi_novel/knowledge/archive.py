@@ -786,6 +786,7 @@ def drop_legacy_chapter_records(db: Any, work_id: str) -> dict:
             """
             SELECT scope_key FROM kb_document
             WHERE work_id=? AND kind='chapter_memory' AND status='active'
+              AND projection_status='done'
             """,
             (work_id,),
         ).fetchall()
@@ -812,7 +813,9 @@ def dedupe_story_records(db: Any, work_id: str) -> dict:
             """
             SELECT id, category, chapter_index, payload_json
             FROM kb_story_record WHERE work_id=?
-            ORDER BY chapter_index IS NULL, chapter_index, created_at, id
+            ORDER BY
+                (json_extract(payload_json, '$.source_document_id') IS NULL),
+                chapter_index IS NULL, chapter_index, created_at, id
             """,
             (work_id,),
         ).fetchall()
@@ -941,7 +944,7 @@ def tick_timers(db: Any, work_id: str, chapter_index: int) -> list[dict]:
 
 def list_story_records(
     db: Any, work_id: str, *, category: str | None = None,
-    at_chapter: int | None = None,
+    at_chapter: int | None = None, only_projected: bool = False,
 ) -> list[dict]:
     query = "SELECT * FROM kb_story_record WHERE work_id=?"
     params: list[Any] = [work_id]
@@ -951,6 +954,18 @@ def list_story_records(
     if at_chapter is not None:
         query += " AND (chapter_index IS NULL OR chapter_index<=?)"
         params.append(at_chapter)
+    if only_projected:
+        query += """
+            AND (
+                json_extract(payload_json, '$.source_document_id') IS NULL
+                OR EXISTS (
+                    SELECT 1 FROM kb_document AS d
+                    WHERE d.id = json_extract(payload_json, '$.source_document_id')
+                      AND d.status='active'
+                      AND d.projection_status='done'
+                )
+            )
+        """
     query += " ORDER BY chapter_index, created_at"
     with db.connection() as connection:
         rows = connection.execute(query, params).fetchall()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from fxi_novel.knowledge import archive, archive_extraction
@@ -1065,7 +1067,7 @@ def test_drop_legacy_chapter_records_keeps_artifact_projection(tmp_path) -> None
     db = _db(tmp_path)
     archive.save_document(
         db, "w1", "chapter_memory", "chapter:1", {"scenes": []},
-        status="active",
+        status="active", projection_status="done",
     )
     archive.add_story_record(
         db, "w1", "scene", {"summary": "旧场景"}, chapter_index=1,
@@ -1085,6 +1087,47 @@ def test_drop_legacy_chapter_records_keeps_artifact_projection(tmp_path) -> None
     assert len(scenes) == 1
     assert scenes[0]["payload"]["name"] == "新场景"
     assert len(archive.list_story_records(db, "w1", category="fact")) == 1
+    db.close()
+
+
+def test_drop_legacy_skips_failed_projection(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"scenes": []},
+        status="active", projection_status="failed",
+    )
+    archive.add_story_record(
+        db, "w1", "scene", {"summary": "旧场景"}, chapter_index=1,
+    )
+    result = archive.drop_legacy_chapter_records(db, "w1")
+    assert result["removed"] == 0
+    assert len(archive.list_story_records(db, "w1", category="scene")) == 1
+    db.close()
+
+
+def test_dedupe_prefers_artifact_projection(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"scenes": []},
+        status="active", projection_status="done",
+    )
+    old = {"name": "场景", "causal_paragraph": "同一段"}
+    new = {**old, "source_document_id": "doc"}
+    with db.transaction() as connection:
+        for record_id, payload in (("old", old), ("new", new)):
+            connection.execute(
+                """
+                INSERT INTO kb_story_record(
+                    id, work_id, chapter_index, category, payload_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (record_id, "w1", 1, "scene",
+                 json.dumps(payload, ensure_ascii=False), record_id),
+            )
+    result = archive.dedupe_story_records(db, "w1")
+    assert result["removed"] == 1
+    records = archive.list_story_records(db, "w1", category="scene")
+    assert records[0]["payload"].get("source_document_id") == "doc"
     db.close()
 
 

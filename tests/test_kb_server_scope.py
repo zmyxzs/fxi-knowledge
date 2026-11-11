@@ -126,6 +126,66 @@ def test_document_review_endpoint_and_update_rollback(tmp_path) -> None:
     assert document["status"] == "superseded"
 
 
+def test_story_hides_failed_projection_records(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    failed = archive.save_document(
+        server.db, work["id"], "chapter_memory", "chapter:1",
+        {"scenes": []}, status="active", projection_status="failed",
+    )
+    archive.add_story_record(
+        server.db, work["id"], "scene",
+        {"name": "半成品", "causal_paragraph": "失败投影",
+         "source_document_id": failed["id"]},
+        chapter_index=1,
+    )
+    archive.add_story_record(
+        server.db, work["id"], "fact",
+        {"entity": "唐三", "field": "年龄", "value": "六岁"},
+        chapter_index=1,
+    )
+    result = server.story("作品", None, 20)
+    assert result["total"] == 1
+    assert result["items"][0]["category"] == "fact"
+    raw = server.list_story_records("作品", None, None)
+    assert raw["total"] == 2
+
+
+def test_story_filters_graph_category(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    archive.add_story_record(
+        server.db, work["id"], "fact",
+        {"entity": "肃北王府", "field": "entity.profile", "value": "势力",
+         "graph_category": "organization"},
+        chapter_index=1,
+    )
+    result = server.story("作品", "organization", 20)
+    assert result["total"] == 1
+    assert result["items"][0]["graph_category"] == "organization"
+
+
+def test_story_preserves_zero_value(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    archive.add_story_record(
+        server.db, work["id"], "fact",
+        {"entity": "唐三", "field": "余额", "value": 0},
+        chapter_index=1,
+    )
+    result = server.story("作品", None, 20)
+    assert result["items"][0]["value"] == 0
+
+
 def test_story_paginates_and_requires_work_with_multiple_works(tmp_path) -> None:
     from fxi_novel.knowledge import archive
 

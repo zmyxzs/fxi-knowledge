@@ -25,6 +25,7 @@ def main() -> int:
     result = archive.dedupe_story_records(server.db, work["id"])
     if args.drop_legacy_chapter_memory:
         result.update(archive.drop_legacy_chapter_records(server.db, work["id"]))
+        result["kept"] = len(archive.list_story_records(server.db, work["id"]))
     print(json.dumps({"work": work["title"], **result}, ensure_ascii=False, indent=2))
     return 0
 

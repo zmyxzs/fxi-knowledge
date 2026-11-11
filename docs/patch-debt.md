@@ -12,6 +12,10 @@
 | 斗罗重复记录 | 去重移除 14 条 |
 | 旧 memory 章节记录混入 | 移除 10 条 |
 | graph 分类查不到 | 增加 `graph_category` 过滤 |
+| 0 值被当空 | `_first_present` 保留 0/False |
+| 失败投影仍可读 | `only_projected` 只读 active+done |
+| 去重保留旧记录 | 优先保留有 `source_document_id` 的记录 |
+| 失败投影时清理旧记录 | 要求 `projection_status='done'` |
 
 ## 仍需跟踪
 
