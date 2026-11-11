@@ -27,6 +27,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from fxi_novel.knowledge import archive, archive_extraction
 from fxi_novel.knowledge.consistency_audit import audit_work
 from fxi_novel.knowledge.consistency_review import adjudicate_entries_openai
+from fxi_novel.knowledge.tokenizer import (
+    register_entity_terms,
+    reset_query_synonyms,
+    set_query_synonyms,
+)
 from fxi_novel.knowledge.event_reconciliation_service import EventVectorReconciliationService
 from fxi_novel.knowledge.graph_parser import KnowledgeGraphParseService
 from fxi_novel.knowledge.parse_stage_audit import KnowledgeParseStageAuditRunner
@@ -282,12 +287,28 @@ class KnowledgeServer:
                 "work": row["title"], "hits": [],
                 "note": "该实体已死亡/损毁；传 include_inactive=1 可查看历史",
             }
-        results, _, meta = asyncio.run(self.knowledge.search_planned(
-            [query], space=self.space, work_id=row["id"], top_k=top_k,
-            source_ids=self.source_ids(row["id"]), coverage_mode="focused",
-            coverage_source_limit=top_k, retrieval_purpose="work_fact",
-            branch=self.branch,
-        ))
+        profile = archive.get_work_profile(self.db, row["id"])
+        glossary = [
+            entry for entry in (profile.get("glossary") or [])
+            if isinstance(entry, dict) and str(entry.get("term") or "").strip()
+        ]
+        if glossary:
+            register_entity_terms([str(entry["term"]) for entry in glossary])
+        synonym_map = {
+            str(entry["term"]): [str(item) for item in entry.get("synonyms") or []]
+            for entry in glossary
+        }
+        token = set_query_synonyms(synonym_map) if synonym_map else None
+        try:
+            results, _, meta = asyncio.run(self.knowledge.search_planned(
+                [query], space=self.space, work_id=row["id"], top_k=top_k,
+                source_ids=self.source_ids(row["id"]), coverage_mode="focused",
+                coverage_source_limit=top_k, retrieval_purpose="work_fact",
+                branch=self.branch,
+            ))
+        finally:
+            if token is not None:
+                reset_query_synonyms(token)
         hits = []
         for item in results:
             text = str(getattr(item, "text", ""))
@@ -384,6 +405,12 @@ class KnowledgeServer:
             or any(not isinstance(module, dict) for module in modules)
         ):
             raise ValueError("archive_modules must be a list of objects")
+        glossary = body.get("glossary")
+        if glossary is not None and (
+            not isinstance(glossary, list)
+            or any(not isinstance(entry, dict) for entry in glossary)
+        ):
+            raise ValueError("glossary must be a list of objects")
         return {
             "work": row["title"],
             **archive.set_work_profile(
@@ -396,6 +423,7 @@ class KnowledgeServer:
                 entity_types=lists["entity_types"],
                 story_categories=lists["story_categories"],
                 archive_modules=modules,
+                glossary=glossary,
             ),
         }
 

@@ -265,6 +265,17 @@ def test_reserve_source_meta_rejects_duplicate_chapter(tmp_path) -> None:
     db.close()
 
 
+def test_work_profile_glossary_roundtrip(tmp_path) -> None:
+    db = _db(tmp_path)
+    glossary = [
+        {"term": "灵石", "synonyms": ["仙石", "灵玉"]},
+        {"term": "境界", "synonyms": ["修为", "层次"]},
+    ]
+    archive.set_work_profile(db, "w1", glossary=glossary)
+    assert archive.get_work_profile(db, "w1")["glossary"] == glossary
+    db.close()
+
+
 def test_work_profile_taxonomy_roundtrip(tmp_path) -> None:
     db = _db(tmp_path)
     archive.set_work_profile(

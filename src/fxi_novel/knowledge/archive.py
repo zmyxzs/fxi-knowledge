@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     resource_units_json TEXT NOT NULL DEFAULT '[]',
     entity_types_json TEXT NOT NULL DEFAULT '["character","location","item","organization","concept"]',
     story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]',
-    archive_modules_json TEXT NOT NULL DEFAULT '[]'
+    archive_modules_json TEXT NOT NULL DEFAULT '[]',
+    glossary_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS kb_source_meta (
     source_id TEXT PRIMARY KEY,
@@ -94,6 +95,10 @@ def ensure_schema(db: Any) -> None:
             connection.execute(
                 "ALTER TABLE kb_work_profile ADD COLUMN archive_modules_json TEXT NOT NULL DEFAULT '[]'"
             )
+        if "glossary_json" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN glossary_json TEXT NOT NULL DEFAULT '[]'"
+            )
     try:
         with db.transaction() as connection:
             connection.execute(
@@ -126,6 +131,26 @@ DEFAULT_ARCHIVE_MODULES: tuple[dict[str, str], ...] = (
 )
 
 
+def _clean_glossary(values: list[dict] | None) -> list[dict]:
+    cleaned: list[dict] = []
+    for item in values or []:
+        if not isinstance(item, dict):
+            continue
+        term = str(item.get("term") or "").strip()
+        if not term:
+            continue
+        synonyms = [
+            str(synonym).strip()
+            for synonym in item.get("synonyms") or []
+            if str(synonym).strip()
+        ]
+        cleaned.append({
+            "term": term,
+            "synonyms": list(dict.fromkeys(synonyms)),
+        })
+    return cleaned
+
+
 def _clean_modules(values: list[dict] | None) -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     for item in values or []:
@@ -155,6 +180,7 @@ def set_work_profile(
     entity_types: list[str] | None = None,
     story_categories: list[str] | None = None,
     archive_modules: list[dict] | None = None,
+    glossary: list[dict] | None = None,
 ) -> dict:
     if work_type not in {"writing", "deconstruct"}:
         raise ValueError("work_type must be writing or deconstruct")
@@ -169,6 +195,8 @@ def set_work_profile(
         archive_modules = existing.get("archive_modules") or [
             dict(module) for module in DEFAULT_ARCHIVE_MODULES
         ]
+    if glossary is None:
+        glossary = existing.get("glossary") or []
 
     def clean(values: list[str]) -> list[str]:
         return list(dict.fromkeys(
@@ -181,9 +209,9 @@ def set_work_profile(
             INSERT INTO kb_work_profile(
                 work_id, work_type, genre, world_summary, protagonist_name,
                 resource_units_json, entity_types_json, story_categories_json,
-                archive_modules_json
+                archive_modules_json, glossary_json
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
@@ -191,7 +219,8 @@ def set_work_profile(
                 resource_units_json=excluded.resource_units_json,
                 entity_types_json=excluded.entity_types_json,
                 story_categories_json=excluded.story_categories_json,
-                archive_modules_json=excluded.archive_modules_json
+                archive_modules_json=excluded.archive_modules_json,
+                glossary_json=excluded.glossary_json
             """,
             (
                 work_id, work_type, genre, world_summary, protagonist_name,
@@ -199,6 +228,7 @@ def set_work_profile(
                 json.dumps(clean(entity_types), ensure_ascii=False),
                 json.dumps(clean(story_categories), ensure_ascii=False),
                 json.dumps(_clean_modules(archive_modules), ensure_ascii=False),
+                json.dumps(_clean_glossary(glossary), ensure_ascii=False),
             ),
         )
     return get_work_profile(db, work_id)
@@ -220,6 +250,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
                 "style_anchor", "timer", "redline",
             ],
             "archive_modules": [dict(module) for module in DEFAULT_ARCHIVE_MODULES],
+            "glossary": [],
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
@@ -231,6 +262,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
         json.loads(profile.pop("archive_modules_json", "[]") or "[]")
         or [dict(module) for module in DEFAULT_ARCHIVE_MODULES]
     )
+    profile["glossary"] = json.loads(profile.pop("glossary_json", "[]") or "[]")
     return profile
 
 

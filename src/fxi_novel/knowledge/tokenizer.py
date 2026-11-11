@@ -2,11 +2,36 @@
 
 import re
 import unicodedata
+from contextvars import ContextVar
 
 import jieba
 
 _REGISTERED_TERMS: set[str] = set()
 _TERM_COMPONENTS: dict[str, tuple[str, ...]] = {}
+_EXTRA_QUERY_SYNONYMS: ContextVar[dict[str, tuple[str, ...]]] = ContextVar(
+    "extra_query_synonyms", default={},
+)
+
+
+def set_query_synonyms(mapping: dict[str, list[str]]) -> object:
+    """Install work-level glossary synonyms for the current request context."""
+    normalized = {
+        str(term).strip().casefold(): tuple(
+            dict.fromkeys(str(item).strip() for item in synonyms if str(item).strip())
+        )
+        for term, synonyms in mapping.items()
+        if str(term).strip()
+    }
+    return _EXTRA_QUERY_SYNONYMS.set(normalized)
+
+
+def reset_query_synonyms(token: object) -> None:
+    _EXTRA_QUERY_SYNONYMS.reset(token)
+
+
+def _query_synonyms(term: str) -> tuple[str, ...]:
+    extra = _EXTRA_QUERY_SYNONYMS.get()
+    return (*_QUERY_SYNONYMS.get(term, ()), *extra.get(term, ()))
 
 
 def register_entity_terms(terms) -> int:
@@ -119,7 +144,7 @@ def fts_query(text: str) -> str:
     for term in tokenize_chinese(text):
         terms.append(term)
         terms.extend(_TERM_COMPONENTS.get(term, ()))
-        terms.extend(_QUERY_SYNONYMS.get(term, ()))
+        terms.extend(_query_synonyms(term))
     quoted = ['"' + term.replace('"', '""') + '"' for term in dict.fromkeys(terms)]
     return " OR ".join(quoted)
 
@@ -167,7 +192,7 @@ def fts_phrase_group_query(text: str) -> str:
     clauses.extend(
         '"' + synonym.replace('"', '""') + '"'
         for term in tokenize_chinese(text)
-        for synonym in _QUERY_SYNONYMS.get(term, ())
+        for synonym in _query_synonyms(term)
     )
     return " OR ".join(dict.fromkeys(clause for clause in clauses if clause))
 
