@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     work_type TEXT NOT NULL DEFAULT 'writing',
     genre TEXT,
     world_summary TEXT,
-    protagonist_name TEXT
+    protagonist_name TEXT,
+    resource_units_json TEXT NOT NULL DEFAULT '[]'
 );
 CREATE TABLE IF NOT EXISTS kb_source_meta (
     source_id TEXT PRIMARY KEY,
@@ -66,6 +67,14 @@ CREATE TABLE IF NOT EXISTS kb_story_record (
 def ensure_schema(db: Any) -> None:
     with db.transaction() as connection:
         connection.executescript(_SCHEMA)
+    with db.transaction() as connection:
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(kb_work_profile)")
+        }
+        if "resource_units_json" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN resource_units_json TEXT NOT NULL DEFAULT '[]'"
+            )
     try:
         with db.transaction() as connection:
             connection.execute(
@@ -93,20 +102,30 @@ def set_work_profile(
     genre: str | None = None,
     world_summary: str | None = None,
     protagonist_name: str | None = None,
+    resource_units: list[str] | None = None,
 ) -> dict:
     if work_type not in {"writing", "deconstruct"}:
         raise ValueError("work_type must be writing or deconstruct")
+    if resource_units is None:
+        resource_units = get_work_profile(db, work_id).get("resource_units") or []
+    resource_json = json.dumps(
+        sorted({str(unit).strip() for unit in resource_units if str(unit).strip()}),
+        ensure_ascii=False,
+    )
     with db.transaction() as connection:
         connection.execute(
             """
-            INSERT INTO kb_work_profile(work_id, work_type, genre, world_summary, protagonist_name)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO kb_work_profile(
+                work_id, work_type, genre, world_summary, protagonist_name, resource_units_json
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
-                protagonist_name=excluded.protagonist_name
+                protagonist_name=excluded.protagonist_name,
+                resource_units_json=excluded.resource_units_json
             """,
-            (work_id, work_type, genre, world_summary, protagonist_name),
+            (work_id, work_type, genre, world_summary, protagonist_name, resource_json),
         )
     return get_work_profile(db, work_id)
 
@@ -119,9 +138,11 @@ def get_work_profile(db: Any, work_id: str) -> dict:
     if row is None:
         return {
             "work_id": work_id, "work_type": "writing", "genre": None,
-            "world_summary": None, "protagonist_name": None,
+            "world_summary": None, "protagonist_name": None, "resource_units": [],
         }
-    return dict(row)
+    profile = dict(row)
+    profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
+    return profile
 
 
 def set_source_meta(
@@ -658,6 +679,33 @@ def compile_archive(
     }
 
 
+def _parse_amount(value: str) -> int | None:
+    text = value.strip().replace(",", "")
+    if text.isdigit():
+        return int(text)
+    chinese = re.sub(r"[^零一二三四五六七八九十百千万两]", "", text)
+    if not chinese:
+        return None
+    digits = {
+        "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9,
+    }
+    units = {"十": 10, "百": 100, "千": 1000, "万": 10000}
+    total = section = number = 0
+    for char in chinese:
+        if char in digits:
+            number = digits[char]
+        elif char in units:
+            unit = units[char]
+            if unit == 10000:
+                total += (section + number) * unit
+                section = number = 0
+            else:
+                section += (number or 1) * unit
+                number = 0
+    return total + section + number
+
+
 def audit_draft(
     db: Any, work_id: str, text: str, *, chapter_index: int | None = None,
 ) -> dict:
@@ -673,21 +721,41 @@ def audit_draft(
                 "entity": entity["canonical_name"],
                 "detail": f"{entity['canonical_name']} 当前状态为 {status}，正文仍出现该名字",
             })
-    spend = [
-        int(amount) for amount in re.findall(
-            r"(?:花了|花费|花掉|支付|消耗)(\d+)(?:两|枚|个)?(?:铜钱|灵石)", text,
-        )
-    ]
-    protagonist = get_work_profile(db, work_id).get("protagonist_name")
-    if spend and protagonist:
+    profile = get_work_profile(db, work_id)
+    protagonist = profile.get("protagonist_name")
+    if protagonist:
         snapshot = get_snapshot(db, work_id, protagonist, at_chapter=chapter_index)
-        ledger = (snapshot or {}).get("dynamic_state", {}).get("inventory_ledger", {})
-        currency = ledger.get("currency", {})
-        total = sum(int(value) for value in currency.values() if isinstance(value, int))
-        if sum(spend) > total:
-            violations.append({
-                "type": "LEDGER_ERROR",
-                "entity": protagonist,
-                "detail": f"本章支出 {sum(spend)}，当前账面合计 {total}",
-            })
+        dynamic = (snapshot or {}).get("dynamic_state", {})
+        ledger = dynamic.get("inventory_ledger", {})
+        balances = {
+            str(name): value
+            for name, value in {
+                **dynamic.get("resources", {}),
+                **ledger.get("currency", {}),
+            }.items()
+        }
+        units = [
+            str(unit) for unit in (profile.get("resource_units") or [])
+            if str(unit).strip()
+        ] or sorted(balances)
+        if units:
+            unit_pattern = "|".join(re.escape(unit) for unit in units)
+            matches = re.findall(
+                rf"(?:花了|花费|花掉|支付|消耗|用掉|花去)"
+                rf"([零一二三四五六七八九十百千万两0-9]+)(?:两|枚|个)?({unit_pattern})",
+                text,
+            )
+            spend_by_unit: dict[str, int] = {}
+            for amount_text, unit in matches:
+                amount = _parse_amount(amount_text)
+                if amount is not None:
+                    spend_by_unit[unit] = spend_by_unit.get(unit, 0) + amount
+            for unit, spend in spend_by_unit.items():
+                balance = balances.get(unit)
+                if isinstance(balance, int) and spend > balance:
+                    violations.append({
+                        "type": "LEDGER_ERROR",
+                        "entity": protagonist,
+                        "detail": f"{unit} 支出 {spend}，当前账面 {balance}",
+                    })
     return {"passed": not violations, "violations": violations}

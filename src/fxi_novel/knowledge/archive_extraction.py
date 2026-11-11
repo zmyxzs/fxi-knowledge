@@ -21,7 +21,7 @@ SYSTEM_PROMPT = """你是小说档案抽取器。根据本章正文和已有实�
       "aliases": ["本章出现的其他称呼"],
       "lifecycle_status": "active|dead|destroyed|exited",
       "dynamic_state": {"current_location": "...", "current_realm": "...", "physical_and_mental": "..."},
-      "ledger_delta": {"currency": {"铜钱": -400}, "items_added": [], "items_removed": []},
+      "ledger_delta": {"currency": {"<资源名>": -400}, "items_added": [], "items_removed": []},
       "cognition_and_relations": {"core_motivation": "...", "known_secrets": [], "cognitive_blind_spots": [], "relations": []},
       "hard_rules": {}
     }
@@ -393,7 +393,7 @@ MEMORY_PROMPT = """你是小说记忆抽取器。只输出一个 JSON 对象，�
 格式：
 {"entities":[{"name":"标准名","type":"character|location|item|organization|concept","aliases":[]}],
  "facts":[{"entity":"实体名","field":"属性","value":"值","evidence":"原文短句"}],
- "state_changes":[{"entity":"实体名","field":"字段","from":"旧值","to":"新值","evidence":"原文短句"}],
+ "state_changes":[{"entity":"实体名","kind":"resource|state","field":"字段或资源名","from":"旧值","to":"新值","evidence":"原文短句"}],
  "scenes":[{"summary":"一段完整因果","participants":["实体名"],"evidence":"原文短句"}],
  "threads":[{"name":"线程名","transition":"new|advanced|blocked|resolved","evidence":"原文短句"}]}
 规则：只写原文明确事实；evidence 必须逐字出现；state_changes 只写本章明确变化；threads 只写跨章仍有影响的问题；没有就空数组。"""
@@ -502,11 +502,15 @@ def apply_memory_output(
         dynamic = dict(previous["dynamic_state"]) if previous else {}
         field = str(change.get("field") or "").strip()
         value = change.get("to")
+        kind = str(change.get("kind") or "").strip()
         if field and value is not None:
             dynamic[field] = value
-            if field in {"铜钱", "灵石", "金币", "银两"}:
+            if kind == "resource":
                 amount = _ledger_number(value)
                 if amount is not None:
+                    resources = dict(dynamic.get("resources") or {})
+                    resources[field] = amount
+                    dynamic["resources"] = resources
                     ledger = dict(dynamic.get("inventory_ledger") or {})
                     currency = dict(ledger.get("currency") or {})
                     currency[field] = amount
@@ -520,7 +524,7 @@ def apply_memory_output(
             ),
             dynamic_state=dynamic,
         )
-        changes.append({"entity": canonical, "field": field, "to": value})
+        changes.append({"entity": canonical, "kind": kind, "field": field, "to": value})
 
     facts = [
         archive.add_story_record(db, work_id, "fact", fact, chapter_index=chapter_index)

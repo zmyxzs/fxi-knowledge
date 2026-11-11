@@ -369,6 +369,12 @@ class KnowledgeServer:
 
     def set_work_profile(self, work: str | None, body: dict) -> dict:
         row = self.resolve_work(work)
+        units = body.get("resource_units")
+        if units is not None and (
+            not isinstance(units, list)
+            or any(not isinstance(unit, str) for unit in units)
+        ):
+            raise ValueError("resource_units must be a list of strings")
         return {
             "work": row["title"],
             **archive.set_work_profile(
@@ -377,6 +383,7 @@ class KnowledgeServer:
                 genre=body.get("genre"),
                 world_summary=body.get("world_summary"),
                 protagonist_name=body.get("protagonist_name"),
+                resource_units=[str(unit) for unit in units] if units else None,
             ),
         }
 

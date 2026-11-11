@@ -272,6 +272,25 @@ def test_ledger_number_parses_chinese_and_digits() -> None:
     assert archive_extraction._ledger_number("十五") == 15
 
 
+def test_audit_uses_configured_resource_units(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石", "贡献点"],
+    )
+    profile = archive.get_work_profile(db, "w1")
+    assert set(profile["resource_units"]) == {"灵石", "贡献点"}
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"resources": {"灵石": 2}},
+    )
+    report = archive.audit_draft(db, "w1", "他花了700灵石买剑。", chapter_index=1)
+    assert report["passed"] is False
+    assert report["violations"][0]["type"] == "LEDGER_ERROR"
+    assert "灵石" in report["violations"][0]["detail"]
+    db.close()
+
+
 def test_apply_memory_output_writes_memory_records(tmp_path) -> None:
     db = _db(tmp_path)
     result = archive_extraction.apply_memory_output(db, "w1", 1, {
@@ -281,8 +300,8 @@ def test_apply_memory_output_writes_memory_records(tmp_path) -> None:
             "evidence": "还剩六百铜钱",
         }],
         "state_changes": [{
-            "entity": "杨凌", "field": "铜钱", "from": "1000", "to": "600",
-            "evidence": "还剩六百铜钱",
+            "entity": "杨凌", "kind": "resource", "field": "铜钱",
+            "from": "1000", "to": "600", "evidence": "还剩六百铜钱",
         }],
         "scenes": [{
             "summary": "杨凌买灵米", "participants": ["杨凌"],
