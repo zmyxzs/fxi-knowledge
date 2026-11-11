@@ -211,6 +211,12 @@ paths:
                 source_ids:
                   type: array
                   items: {type: string}
+                mode:
+                  type: string
+                  enum: [state_update, deconstruct_extract, memory, chapter_memory, archive_update, storyline_network]
+                round: {type: integer, default: 1}
+                base_scope_key: {type: string}
+                force: {type: boolean}
       responses:
         "202": {description: Accepted}
   /api/parse/{job_id}:
@@ -224,3 +230,93 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ParseJob"}
+  /api/work_types:
+    get:
+      summary: 作品类型注册表
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 注册作品类型
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "201": {description: Created}
+  /api/work_profile:
+    get:
+      summary: 作品画像
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 更新作品画像
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/story_record:
+    get:
+      summary: 档案故事记录
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: category, in: query, schema: {type: string}}
+        - {name: at_chapter, in: query, schema: {type: integer}}
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 新增档案故事记录
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "201": {description: Created}
+  /api/compile_archive:
+    post:
+      summary: 编译九模块档案
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/documents:
+    get:
+      summary: 文档工件列表或单件
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: kind, in: query, schema: {type: string}}
+        - {name: scope_key, in: query, schema: {type: string}}
+        - {name: version, in: query, schema: {type: integer}}
+        - {name: status, in: query, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+    post:
+      summary: 保存文档工件
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "201": {description: Created}
+  /api/documents/review:
+    post:
+      summary: 接受或拒绝工件
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+        "409": {description: Version conflict}
+  /api/documents/reproject:
+    post:
+      summary: 重放章节记忆投影
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/documents/search:
+    get:
+      summary: 检索 active 工件
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: q, in: query, required: true, schema: {type: string}}
+        - {name: kind, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 10}}
+      responses:
+        "200": {description: OK}
+  /api/context:
+    get:
+      summary: 组装下一章上下文
+      parameters:
+        - {name: work, in: query, schema: {type: string}}
+        - {name: chapter, in: query, schema: {type: integer}}
+        - {name: max_chars, in: query, schema: {type: integer, default: 60000}}
+      responses:
+        "200": {description: OK}

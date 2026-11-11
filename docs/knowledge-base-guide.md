@@ -16,7 +16,7 @@
 | 实体档案 | A 路硬设定、B 路动态状态、C 路认知与关系 |
 | 章节快照 | 按 `chapter_index` 版本化，删除/编辑自动回滚 |
 | 检索 | 词法检索、卡片、拆书骨架检索 |
-| 解析 | 异步任务，`state_update` / `deconstruct_extract` / `memory` 三种模式 |
+| 解析 | 异步任务，`state_update` / `deconstruct_extract` / `memory` / `chapter_memory` / `archive_update` / `storyline_network` 六种模式 |
 | 审计 | 确定性检查 + 可选 LLM 语义审校 |
 | 编译 | 一键生成九大模块 Markdown |
 
@@ -176,6 +176,9 @@ print(client.audit("示例作品", llm=True))
 - `mode=state_update`：解析后抽取实体/状态/账本，写入档案层
 - `mode=deconstruct_extract`：抽取拆书骨架与文风锚点
 - `mode=memory`：轻量记忆抽取，只产出实体/事实/状态变化/场景/线程，不跑全量图解析
+- `mode=chapter_memory`：章节剧情记忆，生成场景因果链/认知信息差/Δ状态/未决，存入 `kb_document`
+- `mode=archive_update`：原长期档案 + 新章节 → 更新判定草稿 + 新档案版本
+- `mode=storyline_network`：批次细纲 → 线网工件；`round=2` + `base_scope_key` 做证据修正
 - 任务状态落盘 `parse_jobs.json`，重启后未完成任务标为 `interrupted`
 - `progress` 每 3 秒刷新阶段计数与每章状态
 
@@ -205,6 +208,16 @@ print(client.audit("示例作品", llm=True))
 | POST | `/api/work_types` | 注册类型 `{work_type, label, description}` |
 | GET | `/api/work_profile?work=` | 作品画像 |
 | POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary, allow_debt}` |
+| GET | `/api/documents?work=&kind=&scope_key=&version=` | 文档工件列表或单件 |
+| POST | `/api/documents` | 保存文档工件 `{work, kind, scope_key, content, markdown, source_chapters, status, prompt_name, prompt_version, model, schema_version}` |
+| POST | `/api/documents/review` | 接受/拒绝工件 `{work, kind, scope_key, version, action, base_version}`；冲突返回 409 |
+| POST | `/api/documents/reproject` | 重新投影章节记忆 `{work, kind, scope_key, version}` |
+| GET | `/api/documents/search?work=&q=&kind=&limit=` | 按 FTS 检索 active 工件 |
+| GET | `/api/context?work=&chapter=&max_chars=` | 组装长期档案、上一章章节记忆、线网、编译档案 |
+
+工件状态：`draft → reviewed → active`；`active` 只能有一个，新 active 会把旧版置为 `superseded`。编辑/删除第 N 章会 supersede `chapter>=N` 的章节记忆，以及受影响的长期档案、线网。  
+投影状态：`pending / done / failed / not_applicable`；失败可用 `/api/documents/reproject` 重放。  
+`GET /api/documents?status=draft` 可作为 review 队列。
 
 ### 4.3 章节
 
@@ -301,6 +314,9 @@ print(client.audit("示例作品", llm=True))
 | POST | `/api/story_record` | `{work, category, chapter_index, payload}` |
 | GET | `/api/story_record?work=&category=&at_chapter=` | 读取 |
 
+`/api/story` 是统一读取入口：只读档案 `kb_story_record`，返回 `source: archive`。旧 graph 数据已通过 `scripts/backfill_graph_story.py` 回填。  
+`/api/story_record` 是档案原始记录与调试入口。
+
 ### 4.7 编译
 
 `POST /api/compile_archive`
@@ -352,8 +368,12 @@ print(client.audit("示例作品", llm=True))
 `llm=true` 时：
 
 - `method=structured`：先抽取 `state_changes`，再由代码对账，返回 `extracted_changes`
+- 存在 `hard_rules` 或 `redline` 时额外跑语义检查，返回 `hard_rule_check=checked`
+- 没有硬规则/红线时 `hard_rule_check=skipped_no_rules`
 - 抽取失败：`method=regex_fallback`，退回正则扫描
 - `llm=false`：`method=regex`
+
+账本按 `change.entity` 取各自余额；`allow_debt=true` 只有在同批抽到 `kind=debt` 时才豁免超支。
 
 ### 4.9 解析
 
@@ -366,6 +386,9 @@ print(client.audit("示例作品", llm=True))
 - `state_update`：档案状态更新
 - `deconstruct_extract`：拆书骨架与锚点
 - `memory`：轻量记忆抽取（实体/事实/状态/场景/线程），约 10–20 秒/章
+- `chapter_memory`：章节剧情记忆（场景因果/认知信息差/Δ状态/未决），写入 `kb_document`
+- `archive_update`：长期档案增量更新，生成草稿与新版本
+- `storyline_network`：批次线网拆解；二轮用 `round=2` + `base_scope_key`
 
 返回 202：
 
@@ -496,7 +519,7 @@ sqlite3 ~/fxi-bench/data/bench-db.sqlite3 ".backup /tmp/kg-$(date +%F).sqlite3"
 |---|---|---|
 | 401 invalid api key | 密钥不匹配 | 检查 `X-API-Key` 与 `.env` |
 | 503 write API disabled | 未配置 `FXI_KB_API_KEY` | 写入 `.env` 并重启 |
-| 400 mode must be … | parse mode 非法 | 用 `state_update` / `deconstruct_extract` / `memory` |
+| 400 mode must be … | parse mode 非法 | 用 `state_update` / `deconstruct_extract` / `memory` / `chapter_memory` / `archive_update` / `storyline_network` |
 | 400 LLM … not configured | 未配置 LLM | 补齐三个 `FXI_KB_LLM_*` |
 | 500 FOREIGN KEY constraint failed | 历史删除 bug | 已在 `repository_projects.py` 修复 |
 | parse partial，publish failed | 解析阶段失败 | 查 `journalctl` 与 batch item diagnostic |

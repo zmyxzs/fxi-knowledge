@@ -112,8 +112,10 @@
        或 账本/资源现有键
 支出超过余额：
   allow_debt=false → LEDGER_ERROR
-  allow_debt=true  → 记为欠款，不报错
+  allow_debt=true 且同批抽到该实体 kind=debt → 记为欠款
+  allow_debt=true 但没有 debt 变化 → 仍 LEDGER_ERROR
 道具移除超过持有 → ITEM_ERROR
+按 change.entity 取各自余额/库存，不再一律用主角账本
 ```
 
 作品写“仙玉”“贡献点”“信用点”“欠条”“灵剑”，都不需要改代码。
@@ -127,22 +129,25 @@
   → memory 抽取（只抽取，不下结论）
   → state_changes: [{entity, kind, field, direction, amount, evidence}]
   → 代码对账
-       resource decrease 超余额 → LEDGER_ERROR（allow_debt 时豁免）
-       resource set 为负         → LEDGER_ERROR（allow_debt 时豁免）
+       resource decrease 超余额 → LEDGER_ERROR（仅当同批有 debt 时豁免）
+       resource set 为负         → LEDGER_ERROR（同上）
        item remove 超过持有      → ITEM_ERROR
        debt 变化                 → 只记录，不判负余额
        evidence 不在正文         → EVIDENCE_MISMATCH
        提到资源但没抽出变化      → NEEDS_REVIEW
+  → 若存在 hard_rules 或 redline，再跑一次语义检查
+       HARD_RULE_CONFLICT / REDLINE_BREACH 合并回结果
 ```
 
 返回增加：
 
 ```json
-{"method": "structured", "extracted_changes": 1}
+{"method": "structured", "extracted_changes": 1, "hard_rule_check": "checked"}
 ```
 
 - 抽取失败 → `method=regex_fallback`
 - `llm=false` → `method=regex`
+- 没有硬规则/红线 → `hard_rule_check=skipped_no_rules`
 
 “耗费/扣除/打赏/进贡”不再需要逐个加动词。
 
@@ -193,7 +198,7 @@ POST /api/work_types {"work_type":"fanfic","label":"同人","description":"同�
 }
 ```
 
-`kind` 支持 `meta` / `records` / `characters` / `protagonist`。
+`kind` 支持 `meta` / `records` / `characters` / `protagonist` / `chapter_memory`。
 
 ---
 

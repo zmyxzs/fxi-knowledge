@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from typing import Any
 
 import httpx
+
+from .profile_defaults import DEFAULT_ENTITY_TYPES, DEFAULT_STORY_CATEGORIES
 
 SYSTEM_PROMPT = """你是小说档案抽取器。根据本章正文和已有实体表，输出本章结束时的状态变更。
 只输出 JSON，结构如下：
@@ -389,12 +392,6 @@ def apply_output(db: Any, work_id: str, chapter_index: int, output: dict) -> dic
         "story_records": records,
         "summary": output.get("chapter_summary"),
     }
-DEFAULT_ENTITY_TYPES = ("character", "location", "item", "organization", "concept")
-DEFAULT_STORY_CATEGORIES = (
-    "power_and_laws", "map", "faction", "active_storyline", "foreshadow",
-    "completed_storylines", "trope_skeleton", "style_anchor", "timer", "redline",
-)
-
 MEMORY_PROMPT = """你是小说记忆抽取器。只输出一个 JSON 对象，不要解释、不要 Markdown。
 格式：
 {"entities":[{"name":"标准名","type":"__ENTITY_TYPES__","aliases":[]}],
@@ -647,3 +644,808 @@ def apply_memory_output(
         "threads": len(threads),
         "records": len(records),
     }
+CHAPTER_MEMORY_MAX_CHARS = 30_000
+CHAPTER_MEMORY_SCENE_TYPES = {"judgment", "rumor", "lie", "update", "info_gap", "unknown"}
+CHAPTER_MEMORY_STATE_CATEGORIES = {
+    "character", "resource", "item", "debt", "relation", "goal",
+}
+CHAPTER_MEMORY_THREAD_TRANSITIONS = {"new", "advanced", "blocked", "resolved"}
+
+_COGNITION_TYPE_ALIASES = {
+    "判断": "judgment", "judgement": "judgment",
+    "传闻": "rumor", "谣言": "rumor",
+    "谎言": "lie", "谎话": "lie",
+    "认知更新": "update", "更新": "update",
+    "信息差": "info_gap", "信息缺口": "info_gap",
+    "未知": "unknown", "不知道": "unknown",
+}
+_STATE_CATEGORY_ALIASES = {
+    "人物": "character", "角色": "character", "状态": "character",
+    "资源": "resource", "钱": "resource", "货币": "resource",
+    "道具": "item", "物品": "item",
+    "欠款": "debt", "债务": "debt",
+    "关系": "relation",
+    "目标": "goal",
+}
+_THREAD_TRANSITION_ALIASES = {
+    "新": "new", "新增": "new", "开始": "new",
+    "推进": "advanced", "进展": "advanced",
+    "受阻": "blocked", "卡住": "blocked",
+    "解决": "resolved", "完成": "resolved",
+}
+
+
+def _as_list(value: Any) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _first(item: dict, keys: tuple[str, ...], default: Any = "") -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return default
+
+
+def _normalize_quote(value: str) -> str:
+    return "".join(
+        char for char in value
+        if not (
+            char.isspace()
+            or unicodedata.category(char)[0] in {"P", "Z", "S", "C"}
+        )
+    )
+
+
+def normalize_chapter_memory_output(
+    output: dict, chapter_index: int | None = None,
+) -> dict:
+    """Accept alternate keys and Chinese enum labels without losing data."""
+    if not isinstance(output, dict):
+        return {}
+    data = dict(output)
+    if chapter_index is not None and not data.get("chapter_index"):
+        data["chapter_index"] = chapter_index
+    scenes = _as_list(_first(data, ("scenes", "scene_list", "events", "场景"), []))
+    normalized_scenes = []
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        normalized_scenes.append({
+            **scene,
+            "name": _first(scene, ("name", "title", "scene", "场景名")),
+            "causal_paragraph": _first(
+                scene,
+                ("causal_paragraph", "causal", "summary", "description", "因果段"),
+            ),
+            "participants": _as_list(
+                _first(scene, ("participants", "actors", "characters", "参与人"), [])
+            ),
+            "evidence": _first(scene, ("evidence", "quote", "原文")),
+        })
+    data["scenes"] = normalized_scenes
+    cognition = _as_list(
+        _first(data, ("cognition", "cognitions", "knowledge", "认知"), [])
+    )
+    normalized_cognition = []
+    for item in cognition:
+        if not isinstance(item, dict):
+            continue
+        raw_type = str(_first(item, ("type", "kind", "类型"), "unknown")).strip()
+        normalized_cognition.append({
+            **item,
+            "holder": _first(item, ("holder", "character", "entity", "人物"), "未知"),
+            "type": _COGNITION_TYPE_ALIASES.get(raw_type, raw_type),
+            "audience": _as_list(
+                _first(item, ("audience", "readers", "受众"), [])
+            ),
+            "evidence": _first(item, ("evidence", "quote", "原文")),
+        })
+    data["cognition"] = normalized_cognition
+    deltas = _as_list(
+        _first(data, ("state_deltas", "state_changes", "deltas", "changes", "状态变化"), [])
+    )
+    normalized_deltas = []
+    for item in deltas:
+        if not isinstance(item, dict):
+            continue
+        raw_category = str(
+            _first(item, ("category", "kind", "类型"), "")
+        ).strip()
+        normalized_deltas.append({
+            **item,
+            "category": _STATE_CATEGORY_ALIASES.get(raw_category, raw_category),
+            "entity": _first(item, ("entity", "character", "name", "人物"), ""),
+            "evidence": _first(item, ("evidence", "quote", "原文")),
+        })
+    data["state_deltas"] = normalized_deltas
+    threads = _as_list(
+        _first(data, ("unresolved", "threads", "open_threads", "未决"), [])
+    )
+    normalized_threads = []
+    for item in threads:
+        if not isinstance(item, dict):
+            continue
+        raw_transition = str(
+            _first(item, ("transition", "status", "状态"), "new")
+        ).strip()
+        normalized_threads.append({
+            **item,
+            "thread": _first(item, ("thread", "name", "title", "线程"), ""),
+            "transition": _THREAD_TRANSITION_ALIASES.get(
+                raw_transition, raw_transition,
+            ),
+            "next_condition": _first(
+                item, ("next_condition", "next", "condition", "下一步"), "",
+            ),
+            "evidence": _first(item, ("evidence", "quote", "原文")),
+        })
+    data["unresolved"] = normalized_threads
+    return data
+
+
+def validate_chapter_memory_soft(
+    output: dict, text: str, chapter_index: int,
+) -> dict:
+    """Hard errors block storage; everything else degrades to warnings."""
+    hard: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(output, dict):
+        return {"output": {}, "hard": ["输出不是对象"], "warnings": [], "valid": False}
+    if int(output.get("chapter_index") or 0) not in {0, int(chapter_index)}:
+        warnings.append(
+            f"chapter_index 不匹配：输出 {output.get('chapter_index')}，请求 {chapter_index}"
+        )
+    if len(text) > CHAPTER_MEMORY_MAX_CHARS:
+        warnings.append(f"正文超过 {CHAPTER_MEMORY_MAX_CHARS} 字，尾部未参与抽取")
+
+    def check_evidence(item: dict, label: str) -> None:
+        quote = str(item.get("evidence") or "").strip()
+        if not quote:
+            warnings.append(f"{label} 缺少 evidence")
+        elif quote in text:
+            return
+        elif _normalize_quote(quote) in _normalize_quote(text):
+            warnings.append(f"{label} 的 evidence 仅归一化后匹配")
+        else:
+            warnings.append(f"{label} 的 evidence 未逐字出现：{quote[:40]}")
+
+    scenes = output.get("scenes") if isinstance(output.get("scenes"), list) else []
+    if not scenes:
+        hard.append("scenes 为空")
+    if len(scenes) < 3 or len(scenes) > 8:
+        warnings.append(f"scenes 数量 {len(scenes)}，建议 3–8")
+    for index, scene in enumerate(scenes):
+        if not isinstance(scene, dict):
+            warnings.append(f"scenes[{index}] 不是对象")
+            continue
+        if not str(scene.get("name") or "").strip():
+            warnings.append(f"scenes[{index}] 缺少 name")
+        if len(str(scene.get("causal_paragraph") or "").strip()) < 20:
+            warnings.append(f"scenes[{index}] causal_paragraph 过短")
+        if not isinstance(scene.get("participants"), list):
+            warnings.append(f"scenes[{index}] participants 不是数组")
+        check_evidence(scene, f"scenes[{index}]")
+
+    for index, item in enumerate(output.get("cognition") or []):
+        if not isinstance(item, dict):
+            warnings.append(f"cognition[{index}] 不是对象")
+            continue
+        if not str(item.get("holder") or "").strip():
+            warnings.append(f"cognition[{index}] 缺少 holder")
+        if str(item.get("type") or "") not in CHAPTER_MEMORY_SCENE_TYPES:
+            warnings.append(f"cognition[{index}] type 非标准")
+        if not isinstance(item.get("audience"), list):
+            warnings.append(f"cognition[{index}] audience 不是数组")
+        check_evidence(item, f"cognition[{index}]")
+
+    for index, item in enumerate(output.get("state_deltas") or []):
+        if not isinstance(item, dict):
+            warnings.append(f"state_deltas[{index}] 不是对象")
+            continue
+        category = str(item.get("category") or "")
+        if category not in CHAPTER_MEMORY_STATE_CATEGORIES:
+            warnings.append(f"state_deltas[{index}] category 非标准")
+        if category == "resource" and (
+            not str(item.get("field") or "").strip() or item.get("amount") is None
+        ):
+            warnings.append(f"state_deltas[{index}] resource 缺 field/amount")
+        elif category == "item" and (
+            not str(item.get("item") or "").strip() or item.get("quantity") is None
+        ):
+            warnings.append(f"state_deltas[{index}] item 缺 item/quantity")
+        elif category == "debt" and (
+            not str(item.get("creditor") or "").strip() or item.get("amount") is None
+        ):
+            warnings.append(f"state_deltas[{index}] debt 缺 creditor/amount")
+        if not str(item.get("entity") or "").strip():
+            warnings.append(f"state_deltas[{index}] 缺少 entity")
+        check_evidence(item, f"state_deltas[{index}]")
+
+    for index, item in enumerate(output.get("unresolved") or []):
+        if not isinstance(item, dict):
+            warnings.append(f"unresolved[{index}] 不是对象")
+            continue
+        if not str(item.get("thread") or "").strip():
+            warnings.append(f"unresolved[{index}] 缺少 thread")
+        if str(item.get("transition") or "") not in CHAPTER_MEMORY_THREAD_TRANSITIONS:
+            warnings.append(f"unresolved[{index}] transition 非标准")
+        check_evidence(item, f"unresolved[{index}]")
+    return {
+        "output": output,
+        "hard": hard,
+        "warnings": warnings,
+        "valid": not hard,
+    }
+
+
+def _chapter_memory_prompt() -> str:
+    from fxi_novel.project_paths import project_root
+
+    path = project_root() / "prompts" / "learning" / "chapter-memory.md"
+    return path.read_text(encoding="utf-8")
+
+
+def parse_chapter_memory_output(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("chapter memory output must be an object")
+    return normalize_chapter_memory_output(data)
+
+
+def validate_chapter_memory(
+    output: dict, text: str, chapter_index: int,
+) -> list[str]:
+    issues: list[str] = []
+    if int(output.get("chapter_index") or 0) != int(chapter_index):
+        issues.append(
+            f"chapter_index 不匹配：输出 {output.get('chapter_index')}，请求 {chapter_index}"
+        )
+    if len(text) > CHAPTER_MEMORY_MAX_CHARS:
+        issues.append(f"正文超过 {CHAPTER_MEMORY_MAX_CHARS} 字，尾部未参与抽取")
+
+    def evidence(item: dict, label: str) -> None:
+        quote = str(item.get("evidence") or "").strip()
+        if not quote:
+            issues.append(f"{label} 缺少 evidence")
+        elif quote not in text:
+            issues.append(f"{label} 的 evidence 未在正文逐字出现：{quote[:40]}")
+
+    scenes = output.get("scenes") or []
+    if not isinstance(scenes, list) or not 3 <= len(scenes) <= 8:
+        issues.append(f"scenes 数量 {len(scenes) if isinstance(scenes, list) else 0}，应为 3–8")
+    for index, scene in enumerate(scenes if isinstance(scenes, list) else []):
+        if not isinstance(scene, dict):
+            issues.append(f"scenes[{index}] 不是对象")
+            continue
+        if not str(scene.get("name") or "").strip():
+            issues.append(f"scenes[{index}] 缺少 name")
+        paragraph = str(scene.get("causal_paragraph") or "").strip()
+        if len(paragraph) < 40:
+            issues.append(f"scenes[{index}] causal_paragraph 过短")
+        if not isinstance(scene.get("participants"), list):
+            issues.append(f"scenes[{index}] participants 必须是数组")
+        evidence(scene, f"scenes[{index}]")
+
+    for index, item in enumerate(output.get("cognition") or []):
+        if not isinstance(item, dict):
+            issues.append(f"cognition[{index}] 不是对象")
+            continue
+        if not str(item.get("holder") or "").strip():
+            issues.append(f"cognition[{index}] 缺少 holder")
+        if str(item.get("type") or "") not in CHAPTER_MEMORY_SCENE_TYPES:
+            issues.append(f"cognition[{index}] type 非法")
+        if not isinstance(item.get("audience"), list):
+            issues.append(f"cognition[{index}] audience 必须是数组")
+        evidence(item, f"cognition[{index}]")
+
+    for index, item in enumerate(output.get("state_deltas") or []):
+        if not isinstance(item, dict):
+            issues.append(f"state_deltas[{index}] 不是对象")
+            continue
+        category = str(item.get("category") or "")
+        if category not in CHAPTER_MEMORY_STATE_CATEGORIES:
+            issues.append(f"state_deltas[{index}] category 非法")
+        if category == "resource":
+            if not str(item.get("field") or "").strip() or item.get("amount") is None:
+                issues.append(f"state_deltas[{index}] resource 缺 field/amount")
+        elif category == "item":
+            if not str(item.get("item") or "").strip() or item.get("quantity") is None:
+                issues.append(f"state_deltas[{index}] item 缺 item/quantity")
+        elif category == "debt":
+            if not str(item.get("creditor") or "").strip() or item.get("amount") is None:
+                issues.append(f"state_deltas[{index}] debt 缺 creditor/amount")
+        if not str(item.get("entity") or "").strip():
+            issues.append(f"state_deltas[{index}] 缺少 entity")
+        evidence(item, f"state_deltas[{index}]")
+
+    for index, item in enumerate(output.get("unresolved") or []):
+        if not isinstance(item, dict):
+            issues.append(f"unresolved[{index}] 不是对象")
+            continue
+        if not str(item.get("thread") or "").strip():
+            issues.append(f"unresolved[{index}] 缺少 thread")
+        if str(item.get("transition") or "") not in CHAPTER_MEMORY_THREAD_TRANSITIONS:
+            issues.append(f"unresolved[{index}] transition 非法")
+        evidence(item, f"unresolved[{index}]")
+    return issues
+
+
+def render_chapter_memory(output: dict) -> str:
+    chapter = output.get("chapter_index")
+    lines = [f"# 第{chapter}章 剧情记忆"]
+    for scene in output.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        lines.append(
+            f"- [{scene.get('name') or '未命名场景'}]：{scene.get('causal_paragraph') or ''}"
+        )
+    lines.append("")
+    lines.append("认知与信息差：")
+    cognition = [
+        item for item in (output.get("cognition") or []) if isinstance(item, dict)
+    ]
+    if cognition:
+        for item in cognition:
+            lines.append(
+                f"- {item.get('type')}·{item.get('holder')}：{item.get('content') or ''}"
+            )
+    else:
+        lines.append("- 无")
+    lines.append("")
+    lines.append("Δ状态：")
+    deltas = [
+        item for item in (output.get("state_deltas") or []) if isinstance(item, dict)
+    ]
+    if deltas:
+        for item in deltas:
+            detail = item.get("to") if item.get("to") is not None else item.get("amount")
+            if item.get("item"):
+                detail = f"{item.get('item')} {item.get('direction')} {item.get('quantity')}"
+            lines.append(
+                f"- {item.get('category')}·{item.get('entity')}：{item.get('field') or ''} {detail or ''}".rstrip()
+            )
+    else:
+        lines.append("- 无")
+    lines.append("")
+    lines.append("未决：")
+    unresolved = [
+        item for item in (output.get("unresolved") or []) if isinstance(item, dict)
+    ]
+    if unresolved:
+        for item in unresolved:
+            lines.append(
+                f"- [{item.get('thread')}·{item.get('transition')}] {item.get('next_condition') or ''}"
+            )
+    else:
+        lines.append("- 无")
+    return "\n".join(lines)
+
+
+def _project_chapter_memory(
+    db: Any, work_id: str, chapter_index: int, output: dict,
+    document_id: str,
+) -> dict:
+    from . import archive
+
+    with db.transaction() as connection:
+        connection.execute(
+            """
+            DELETE FROM kb_story_record
+            WHERE work_id=? AND chapter_index=?
+              AND category IN ('scene','cognition','thread','state_delta')
+              AND json_extract(payload_json, '$.source_document_id') IS NOT NULL
+            """,
+            (work_id, chapter_index),
+        )
+    counts = {"scene": 0, "cognition": 0, "thread": 0, "state_delta": 0}
+    for scene in output.get("scenes") or []:
+        if not isinstance(scene, dict):
+            continue
+        archive.add_story_record(
+            db, work_id, "scene",
+            {**scene, "source_document_id": document_id},
+            chapter_index=chapter_index,
+        )
+        counts["scene"] += 1
+    for item in output.get("cognition") or []:
+        if not isinstance(item, dict):
+            continue
+        archive.add_story_record(
+            db, work_id, "cognition",
+            {**item, "source_document_id": document_id},
+            chapter_index=chapter_index,
+        )
+        counts["cognition"] += 1
+    for item in output.get("unresolved") or []:
+        if not isinstance(item, dict):
+            continue
+        archive.add_story_record(
+            db, work_id, "thread",
+            {**item, "source_document_id": document_id},
+            chapter_index=chapter_index,
+        )
+        counts["thread"] += 1
+    state_changes = []
+    for delta in output.get("state_deltas") or []:
+        if not isinstance(delta, dict):
+            continue
+        category = str(delta.get("category") or "")
+        if category in {"resource", "item", "debt"}:
+            state_changes.append({**delta, "kind": category})
+        else:
+            archive.add_story_record(
+                db, work_id, "state_delta",
+                {**delta, "source_document_id": document_id},
+                chapter_index=chapter_index,
+            )
+            counts["state_delta"] += 1
+    if state_changes:
+        apply_memory_output(db, work_id, chapter_index, {
+            "state_changes": state_changes,
+        })
+    return counts
+
+
+def apply_chapter_memory_output(
+    db: Any, work_id: str, chapter_index: int, output: dict, *,
+    text: str, prompt_name: str = "chapter-memory",
+    prompt_version: str = "4", model: str | None = None,
+) -> dict:
+    from . import archive
+
+    normalized = normalize_chapter_memory_output(output, chapter_index)
+    check = validate_chapter_memory_soft(normalized, text, chapter_index)
+    issues = check["hard"]
+    warnings = check["warnings"]
+    document = archive.save_document(
+        db, work_id, "chapter_memory", f"chapter:{chapter_index}", normalized,
+        markdown=render_chapter_memory(normalized),
+        source_chapters=[chapter_index],
+        status="active" if not issues else "draft",
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        model=model,
+        schema_version=1,
+        projection_status="pending" if not issues else "not_applicable",
+        warnings=warnings,
+    )
+    projection = {"scene": 0, "cognition": 0, "thread": 0, "state_delta": 0}
+    projection_error = None
+    if not issues:
+        try:
+            projection = _project_chapter_memory(
+                db, work_id, chapter_index, normalized, document["id"],
+            )
+            archive.set_document_projection(db, document["id"], "done")
+        except Exception as exc:  # noqa: BLE001 - retryable projection
+            projection_error = f"{type(exc).__name__}: {exc}"
+            archive.set_document_projection(
+                db, document["id"], "failed", projection_error,
+            )
+        document = archive.get_document(
+            db, work_id, "chapter_memory", f"chapter:{chapter_index}",
+            version=document["version"],
+        ) or document
+    return {
+        "chapter_index": chapter_index,
+        "valid": not issues,
+        "issues": issues,
+        "warnings": warnings,
+        "document": document,
+        "projection": projection,
+        "projection_error": projection_error,
+        "scenes": len(normalized.get("scenes") or []),
+        "cognition": len(normalized.get("cognition") or []),
+        "state_deltas": len(normalized.get("state_deltas") or []),
+        "unresolved": len(normalized.get("unresolved") or []),
+    }
+
+
+async def extract_chapter_memory_with_openai(
+    text: str,
+    chapter_index: int,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 180.0,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    messages = [
+        {"role": "system", "content": _chapter_memory_prompt()},
+        {"role": "user", "content": json.dumps(
+            {"chapter_index": chapter_index, "text": text[:CHAPTER_MEMORY_MAX_CHARS]},
+            ensure_ascii=False,
+        )},
+    ]
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": _merge_system(messages),
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_chapter_memory_output(content)
+ARCHIVE_UPDATE_MAX_CHAPTER_CHARS = 20_000
+ARCHIVE_UPDATE_MAX_PREVIOUS_CHARS = 60_000
+ARCHIVE_MODULE_TITLES = (
+    "一、题材与元规则",
+    "二、力量和规则体系",
+    "三、地图与副本档案",
+    "四、人物关系网",
+    "五、核心角色档案",
+    "六、势力关系网",
+    "七、当前活跃故事线",
+    "八、伏笔与待回收因果档案",
+    "九、已完结故事线概要",
+)
+
+
+def _archive_update_prompt() -> str:
+    from fxi_novel.project_paths import project_root
+
+    path = project_root() / "prompts" / "learning" / "archive-update.md"
+    return path.read_text(encoding="utf-8")
+
+
+def parse_archive_update_output(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("archive update output must be an object")
+    for key in ("draft", "archive"):
+        if not isinstance(data.get(key), str) or not data[key].strip():
+            raise ValueError(f"{key} must be a non-empty string")
+    return data
+
+
+def validate_archive_update(
+    output: dict, previous_archive: str,
+) -> list[str]:
+    issues: list[str] = []
+    draft = str(output.get("draft") or "")
+    archive = str(output.get("archive") or "")
+    if not draft.strip():
+        issues.append("draft 为空")
+    if not archive.strip():
+        issues.append("archive 为空")
+        return issues
+    for phase in ("第一阶段", "第二阶段", "第三阶段"):
+        if phase not in draft:
+            issues.append(f"draft 缺少 {phase}")
+    normalized = archive.replace(" ", "").replace("\u3000", "")
+    missing = [title for title in ARCHIVE_MODULE_TITLES if title not in normalized]
+    if missing:
+        issues.append("archive 缺少模块：" + "、".join(missing))
+    if previous_archive and len(archive) < len(previous_archive) * 0.5:
+        issues.append("archive 长度不足原档案一半，可能丢失内容")
+    if "创作建议" in archive:
+        issues.append("archive 含创作建议")
+    return issues
+
+
+def apply_archive_update(
+    db: Any, work_id: str, output: dict, *,
+    source_chapters: list[int], previous_archive: str = "",
+    prompt_name: str = "archive-update",
+    prompt_version: str = "1", model: str | None = None,
+) -> dict:
+    from . import archive
+
+    issues = validate_archive_update(output, previous_archive)
+    document = archive.save_document(
+        db, work_id, "long_term_archive", "main", output,
+        markdown=str(output.get("archive") or ""),
+        source_chapters=source_chapters,
+        status="active" if not issues else "draft",
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        model=model,
+        schema_version=1,
+    )
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "document": document,
+    }
+
+
+async def extract_archive_update_with_openai(
+    previous_archive: str,
+    chapters: list[dict],
+    *,
+    work_title: str = "",
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 300.0,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "work_title": work_title,
+        "previous_archive": previous_archive[:ARCHIVE_UPDATE_MAX_PREVIOUS_CHARS],
+        "new_chapters": [
+            {
+                "chapter_index": chapter.get("chapter_index"),
+                "text": str(chapter.get("text") or "")[:ARCHIVE_UPDATE_MAX_CHAPTER_CHARS],
+            }
+            for chapter in chapters
+        ],
+    }
+    messages = [
+        {"role": "system", "content": _archive_update_prompt()},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": _merge_system(messages),
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_archive_update_output(content)
+STORYLINE_SECTIONS = (
+    "一、拆解定位",
+    "二、线网总览",
+    "三、分线说明书",
+    "四、纠缠与爆点逻辑",
+    "五、爽点类型轮换序列",
+    "六、角色线网位",
+    "七、功能出口快照",
+    "八、待验证假设与未决项清单",
+    "九、分析备注",
+)
+STORYLINE_EXITS = tuple(f"出口{name}" for name in "一二三四五六七八")
+STORYLINE_CHAPTER_PATTERN = re.compile(r"第\s*[0-9一二三四五六七八九十百千]+\s*章")
+
+
+def _storyline_network_prompt() -> str:
+    from fxi_novel.project_paths import project_root
+
+    path = project_root() / "prompts" / "learning" / "storyline-network.md"
+    return path.read_text(encoding="utf-8")
+
+
+def parse_storyline_network_output(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
+    data = json.loads(cleaned)
+    if not isinstance(data, dict):
+        raise ValueError("storyline network output must be an object")
+    if not isinstance(data.get("network"), str) or not data["network"].strip():
+        raise ValueError("network must be a non-empty string")
+    assumptions = data.get("assumptions")
+    if assumptions is not None and not isinstance(assumptions, list):
+        raise ValueError("assumptions must be a list")
+    return data
+
+
+def validate_storyline_network(
+    output: dict, previous_network: str = "",
+) -> list[str]:
+    issues: list[str] = []
+    network = str(output.get("network") or "")
+    if not network.strip():
+        issues.append("network 为空")
+        return issues
+    normalized = network.replace(" ", "").replace("\u3000", "")
+    for section in STORYLINE_SECTIONS:
+        if section not in normalized:
+            issues.append(f"network 缺少章节：{section}")
+    for exit_name in STORYLINE_EXITS:
+        if exit_name not in normalized:
+            issues.append(f"network 缺少 {exit_name}")
+    if STORYLINE_CHAPTER_PATTERN.search(network):
+        issues.append("network 出现章节号")
+    if previous_network and len(network) < len(previous_network) * 0.5:
+        issues.append("network 长度不足上一轮一半，可能丢失内容")
+    assumptions = output.get("assumptions") or []
+    if not isinstance(assumptions, list):
+        issues.append("assumptions 必须是数组")
+    return issues
+
+
+def apply_storyline_network(
+    db: Any, work_id: str, output: dict, *,
+    scope_key: str, source_chapters: list[int],
+    round_number: int = 1, base_scope_key: str | None = None,
+    previous_network: str = "",
+    prompt_name: str = "storyline-network",
+    prompt_version: str = "1", model: str | None = None,
+) -> dict:
+    from . import archive
+
+    issues = validate_storyline_network(output, previous_network)
+    content = {
+        **output,
+        "round": round_number,
+        "base_scope_key": base_scope_key,
+    }
+    document = archive.save_document(
+        db, work_id, "storyline_network", scope_key, content,
+        markdown=str(output.get("network") or ""),
+        source_chapters=source_chapters,
+        status="active" if not issues else "draft",
+        prompt_name=prompt_name,
+        prompt_version=prompt_version,
+        model=model,
+        schema_version=1,
+    )
+    return {
+        "valid": not issues,
+        "issues": issues,
+        "document": document,
+        "round": round_number,
+    }
+
+
+async def extract_storyline_network_with_openai(
+    chapters: list[dict],
+    *,
+    base_network: str = "",
+    evidence_chapters: list[dict] | None = None,
+    work_title: str = "",
+    base_url: str,
+    api_key: str,
+    model: str,
+    timeout: float = 300.0,
+) -> dict:
+    url = base_url.rstrip("/") + "/chat/completions"
+    payload = {
+        "work_title": work_title,
+        "batch_chapters": [
+            {
+                "chapter_index": chapter.get("chapter_index"),
+                "text": str(chapter.get("text") or "")[:12_000],
+            }
+            for chapter in chapters
+        ],
+        "base_network": base_network[:60_000],
+        "evidence_chapters": [
+            {
+                "chapter_index": chapter.get("chapter_index"),
+                "text": str(chapter.get("text") or "")[:12_000],
+            }
+            for chapter in (evidence_chapters or [])
+        ],
+    }
+    messages = [
+        {"role": "system", "content": _storyline_network_prompt()},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+    ]
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": _merge_system(messages),
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+            },
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+    return parse_storyline_network_output(content)

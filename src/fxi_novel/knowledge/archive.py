@@ -15,6 +15,14 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from .profile_defaults import (
+    DEFAULT_ALLOW_DEBT,
+    DEFAULT_ARCHIVE_MODULES,
+    DEFAULT_ENTITY_TYPES,
+    DEFAULT_STORY_CATEGORIES,
+    DEFAULT_WORK_TYPE,
+)
+
 logger = logging.getLogger(__name__)
 
 _SCHEMA = """
@@ -72,6 +80,41 @@ CREATE TABLE IF NOT EXISTS kb_story_record (
     payload_json TEXT NOT NULL,
     created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS ix_kb_story_record_work_chapter
+ON kb_story_record(work_id, chapter_index);
+CREATE INDEX IF NOT EXISTS ix_kb_story_record_scope
+ON kb_story_record(work_id, category, chapter_index);
+CREATE TABLE IF NOT EXISTS kb_document (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    scope_key TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    content_json TEXT NOT NULL,
+    content_markdown TEXT,
+    source_chapters_json TEXT NOT NULL DEFAULT '[]',
+    prompt_name TEXT,
+    prompt_version TEXT,
+    model TEXT,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    projection_status TEXT NOT NULL DEFAULT 'not_applicable',
+    projection_error TEXT,
+    warnings_json TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(work_id, kind, scope_key, version)
+);
+CREATE INDEX IF NOT EXISTS ix_kb_document_scope
+ON kb_document(work_id, kind, scope_key, version);
+CREATE VIRTUAL TABLE IF NOT EXISTS kb_document_fts USING fts5(
+    document_id UNINDEXED,
+    work_id UNINDEXED,
+    kind UNINDEXED,
+    scope_key UNINDEXED,
+    chunk_index UNINDEXED,
+    text,
+    tokens
+);
 """
 
 
@@ -120,6 +163,22 @@ def ensure_schema(db: Any) -> None:
         if "allow_debt" not in columns:
             connection.execute(
                 "ALTER TABLE kb_work_profile ADD COLUMN allow_debt INTEGER NOT NULL DEFAULT 0"
+            )
+        document_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(kb_document)")
+        }
+        if "projection_status" not in document_columns:
+            connection.execute(
+                "ALTER TABLE kb_document ADD COLUMN projection_status TEXT NOT NULL "
+                "DEFAULT 'not_applicable'"
+            )
+        if "projection_error" not in document_columns:
+            connection.execute(
+                "ALTER TABLE kb_document ADD COLUMN projection_error TEXT"
+            )
+        if "warnings_json" not in document_columns:
+            connection.execute(
+                "ALTER TABLE kb_document ADD COLUMN warnings_json TEXT"
             )
     try:
         with db.transaction() as connection:
@@ -176,19 +235,6 @@ def register_work_type(
     return get_work_type(db, value) or {}
 
 
-DEFAULT_ARCHIVE_MODULES: tuple[dict[str, str], ...] = (
-    {"title": "模块一：题材与元规则", "kind": "meta"},
-    {"title": "模块二：力量体系与金手指", "kind": "records", "category": "power_and_laws"},
-    {"title": "模块三：地图与区域规则", "kind": "records", "category": "map"},
-    {"title": "模块四：出场人物简表", "kind": "characters"},
-    {"title": "模块五：主角高维面板", "kind": "protagonist"},
-    {"title": "模块六：派系与势力", "kind": "records", "category": "faction"},
-    {"title": "模块七：活跃故事线", "kind": "records", "category": "active_storyline"},
-    {"title": "模块八：伏笔与认知盲区", "kind": "records", "category": "foreshadow"},
-    {"title": "模块九：已完结故事线", "kind": "records", "category": "completed_storylines"},
-)
-
-
 def _clean_glossary(values: list[dict] | None) -> list[dict]:
     cleaned: list[dict] = []
     for item in values or []:
@@ -216,7 +262,9 @@ def _clean_modules(values: list[dict] | None) -> list[dict[str, str]]:
             continue
         title = str(item.get("title") or "").strip()
         kind = str(item.get("kind") or "").strip()
-        if not title or kind not in {"meta", "records", "characters", "protagonist"}:
+        if not title or kind not in {
+            "meta", "records", "characters", "protagonist", "chapter_memory",
+        }:
             continue
         row = {"title": title, "kind": kind}
         category = str(item.get("category") or "").strip()
@@ -243,7 +291,7 @@ def set_work_profile(
 ) -> dict:
     existing = get_work_profile(db, work_id)
     if work_type is None:
-        work_type = existing.get("work_type") or "writing"
+        work_type = existing.get("work_type") or DEFAULT_WORK_TYPE
     if get_work_type(db, work_type) is None:
         raise ValueError(
             f"unknown work_type: {work_type}; register it via /api/work_types first"
@@ -314,17 +362,13 @@ def get_work_profile(db: Any, work_id: str) -> dict:
         ).fetchone()
     if row is None:
         return {
-            "work_id": work_id, "work_type": "writing", "genre": None,
+            "work_id": work_id, "work_type": DEFAULT_WORK_TYPE, "genre": None,
             "world_summary": None, "protagonist_name": None, "resource_units": [],
-            "entity_types": ["character", "location", "item", "organization", "concept"],
-            "story_categories": [
-                "power_and_laws", "map", "faction", "active_storyline",
-                "foreshadow", "completed_storylines", "trope_skeleton",
-                "style_anchor", "timer", "redline",
-            ],
+            "entity_types": list(DEFAULT_ENTITY_TYPES),
+            "story_categories": list(DEFAULT_STORY_CATEGORIES),
             "archive_modules": [dict(module) for module in DEFAULT_ARCHIVE_MODULES],
             "glossary": [],
-            "allow_debt": False,
+            "allow_debt": DEFAULT_ALLOW_DEBT,
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
@@ -557,9 +601,74 @@ def get_snapshot(
     return result
 
 
-def rollback_after_chapter(db: Any, work_id: str, chapter_index: int) -> dict:
-    """Delete snapshots at or after the edited/deleted chapter."""
+def review_document(
+    db: Any, work_id: str, kind: str, scope_key: str, version: int,
+    action: str, *, base_version: int | None = None,
+) -> dict:
+    if action not in {"accept", "reject"}:
+        raise ValueError("action must be accept or reject")
+    document = get_document(
+        db, work_id, kind, scope_key, version=int(version),
+    )
+    if document is None:
+        raise ValueError("document not found")
+    if document["status"] in {"superseded", "rejected"}:
+        raise ValueError(f"document is {document['status']}")
+    if action == "reject":
+        with db.transaction() as connection:
+            connection.execute(
+                "UPDATE kb_document SET status='rejected' WHERE id=?",
+                (document["id"],),
+            )
+        return get_document(db, work_id, kind, scope_key, version=int(version)) or {}
+    active = get_document(db, work_id, kind, scope_key, status="active")
+    current_version = active["version"] if active else 0
+    if base_version is not None and int(base_version) != int(current_version):
+        raise DocumentConflictError(
+            f"active version changed: expected base {base_version}, got {current_version}"
+        )
     with db.transaction() as connection:
+        connection.execute(
+            """
+            UPDATE kb_document SET status='superseded'
+            WHERE work_id=? AND kind=? AND scope_key=?
+              AND status='active' AND version!=?
+            """,
+            (work_id, kind, scope_key, int(version)),
+        )
+        connection.execute(
+            "UPDATE kb_document SET status='active' WHERE id=?",
+            (document["id"],),
+        )
+    return get_document(db, work_id, kind, scope_key, version=int(version)) or {}
+
+
+def rollback_after_chapter(db: Any, work_id: str, chapter_index: int) -> dict:
+    """Delete snapshots/story records and invalidate artifacts at or after a chapter."""
+    with db.transaction() as connection:
+        superseded = connection.execute(
+            """
+            UPDATE kb_document SET status='superseded'
+            WHERE work_id=? AND status IN ('draft','reviewed','active')
+              AND (
+                (kind='chapter_memory'
+                 AND scope_key LIKE 'chapter:%'
+                 AND CAST(substr(scope_key, 9) AS INTEGER) >= ?)
+                OR (kind='long_term_archive'
+                    AND (
+                      json_array_length(source_chapters_json) = 0
+                      OR EXISTS (
+                        SELECT 1 FROM json_each(source_chapters_json)
+                        WHERE CAST(value AS INTEGER) >= ?
+                      )
+                    ))
+                OR (kind='storyline_network'
+                    AND scope_key LIKE 'batch:%-%'
+                    AND CAST(substr(scope_key, instr(scope_key, '-') + 1) AS INTEGER) >= ?)
+              )
+            """,
+            (work_id, int(chapter_index), int(chapter_index), int(chapter_index)),
+        ).rowcount
         snapshots = connection.execute(
             "DELETE FROM kb_entity_snapshot WHERE work_id=? AND chapter_index>=?",
             (work_id, chapter_index),
@@ -568,13 +677,26 @@ def rollback_after_chapter(db: Any, work_id: str, chapter_index: int) -> dict:
             "DELETE FROM kb_story_record WHERE work_id=? AND chapter_index>=?",
             (work_id, chapter_index),
         ).rowcount
-    return {"deleted_snapshots": snapshots, "deleted_story_records": records}
+    return {
+        "deleted_snapshots": snapshots,
+        "deleted_story_records": records,
+        "superseded_documents": superseded,
+    }
 
 
-def list_entities(db: Any, work_id: str, *, include_inactive: bool = False) -> list[dict]:
+def list_entities(
+    db: Any, work_id: str, *, include_inactive: bool = False,
+    at_chapter: int | None = None,
+) -> list[dict]:
+    chapter_filter = ""
+    params: list[Any] = []
+    if at_chapter is not None:
+        chapter_filter = "AND latest.chapter_index <= ?"
+        params.append(int(at_chapter))
+    params.append(work_id)
     with db.connection() as connection:
         rows = connection.execute(
-            """
+            f"""
             SELECT e.*, s.chapter_index, s.lifecycle_status
             FROM kb_entity AS e
             LEFT JOIN kb_entity_snapshot AS s
@@ -582,10 +704,11 @@ def list_entities(db: Any, work_id: str, *, include_inactive: bool = False) -> l
              AND s.chapter_index = (
                  SELECT MAX(latest.chapter_index) FROM kb_entity_snapshot AS latest
                  WHERE latest.work_id=e.work_id AND latest.canonical_name=e.canonical_name
+                 {chapter_filter}
              )
             WHERE e.work_id=?
             """,
-            (work_id,),
+            params,
         ).fetchall()
     entities = []
     for row in rows:
@@ -619,8 +742,11 @@ def purge_work(db: Any, work_id: str) -> dict:
     """Remove archive rows when a work is deleted."""
     deleted = {}
     with db.transaction() as connection:
+        deleted["kb_document_fts"] = connection.execute(
+            "DELETE FROM kb_document_fts WHERE work_id=?", (work_id,),
+        ).rowcount
         for table in (
-            "kb_entity_snapshot", "kb_entity", "kb_story_record",
+            "kb_document", "kb_entity_snapshot", "kb_entity", "kb_story_record",
             "kb_source_meta", "kb_work_profile",
         ):
             deleted[table] = connection.execute(
@@ -629,12 +755,17 @@ def purge_work(db: Any, work_id: str) -> dict:
     return deleted
 
 
-def related_entities(db: Any, work_id: str, name: str, *, limit: int = 10) -> list[dict]:
-    """One-hop strong relations from the entity's latest cognition snapshot."""
+def related_entities(
+    db: Any, work_id: str, name: str, *, limit: int = 10,
+    at_chapter: int | None = None,
+) -> list[dict]:
+    """One-hop strong relations from the entity's cognition snapshot as of a chapter."""
     entity = resolve_entity(db, work_id, name)
     if entity is None:
         return []
-    snapshot = get_snapshot(db, work_id, entity["canonical_name"])
+    snapshot = get_snapshot(
+        db, work_id, entity["canonical_name"], at_chapter=at_chapter,
+    )
     relations = (snapshot or {}).get("cognition", {}).get("relations") or []
     results = []
     for relation in relations:
@@ -646,14 +777,19 @@ def related_entities(db: Any, work_id: str, name: str, *, limit: int = 10) -> li
         target = resolve_entity(db, work_id, target_name)
         if target is None:
             continue
-        target_snapshot = get_snapshot(db, work_id, target["canonical_name"])
+        target_snapshot = get_snapshot(
+            db, work_id, target["canonical_name"], at_chapter=at_chapter,
+        )
+        status = (target_snapshot or {}).get("lifecycle_status", "active")
+        if status in {"dead", "destroyed"}:
+            continue
         state = (target_snapshot or {}).get("dynamic_state", {})
         results.append({
             "name": target["canonical_name"],
             "surface_relation": relation.get("surface_relation"),
             "true_attitude": relation.get("true_attitude"),
             "location": state.get("current_location"),
-            "lifecycle_status": (target_snapshot or {}).get("lifecycle_status", "active"),
+            "lifecycle_status": status,
         })
         if len(results) >= limit:
             break
@@ -728,11 +864,295 @@ def list_story_records(
     ]
 
 
+_DOCUMENT_STATUSES = {"draft", "reviewed", "active", "rejected", "superseded"}
+
+
+class DocumentConflictError(Exception):
+    """Raised when a document review is based on a stale active version."""
+
+
+def save_document(
+    db: Any, work_id: str, kind: str, scope_key: str, content: Any,
+    *, markdown: str | None = None,
+    source_chapters: list[int] | None = None,
+    status: str = "draft",
+    prompt_name: str | None = None,
+    prompt_version: str | None = None,
+    model: str | None = None,
+    schema_version: int = 1,
+    projection_status: str = "not_applicable",
+    projection_error: str | None = None,
+    warnings: list[str] | None = None,
+) -> dict:
+    """Store a versioned document artifact (chapter memory, archive, line network)."""
+    kind = kind.strip()
+    scope_key = scope_key.strip()
+    if not kind or not scope_key:
+        raise ValueError("kind and scope_key are required")
+    if status not in _DOCUMENT_STATUSES:
+        raise ValueError(f"status must be one of {sorted(_DOCUMENT_STATUSES)}")
+    document_id = uuid.uuid4().hex
+    with db.transaction() as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(MAX(version), 0) + 1 FROM kb_document
+            WHERE work_id=? AND kind=? AND scope_key=?
+            """,
+            (work_id, kind, scope_key),
+        ).fetchone()
+        version = int(row[0])
+        if status == "active":
+            connection.execute(
+                """
+                UPDATE kb_document SET status='superseded'
+                WHERE work_id=? AND kind=? AND scope_key=? AND status!='superseded'
+                """,
+                (work_id, kind, scope_key),
+            )
+        connection.execute(
+            """
+            INSERT INTO kb_document(
+                id, work_id, kind, scope_key, version, status,
+                content_json, content_markdown, source_chapters_json,
+                prompt_name, prompt_version, model, schema_version,
+                projection_status, projection_error, warnings_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id, work_id, kind, scope_key, version, status,
+                json.dumps(content, ensure_ascii=False), markdown,
+                json.dumps(source_chapters or [], ensure_ascii=False),
+                prompt_name, prompt_version, model, int(schema_version),
+                projection_status, projection_error,
+                json.dumps(warnings or [], ensure_ascii=False), _now(),
+            ),
+        )
+        _index_document(
+            connection, document_id, work_id, kind, scope_key,
+            markdown or json.dumps(content, ensure_ascii=False),
+        )
+    return get_document(
+        db, work_id, kind, scope_key, version=version,
+    )
+
+
+def get_document(
+    db: Any, work_id: str, kind: str, scope_key: str,
+    *, version: int | None = None, status: str | None = None,
+) -> dict | None:
+    query = """
+        SELECT * FROM kb_document
+        WHERE work_id=? AND kind=? AND scope_key=?
+    """
+    params: list[Any] = [work_id, kind, scope_key]
+    if version is not None:
+        query += " AND version=?"
+        params.append(int(version))
+    elif status is not None:
+        query += " AND status=?"
+        params.append(status)
+    query += " ORDER BY version DESC LIMIT 1"
+    with db.connection() as connection:
+        row = connection.execute(query, params).fetchone()
+    if row is None:
+        return None
+    return _document_row(row)
+
+
+def list_documents(
+    db: Any, work_id: str, *, kind: str | None = None,
+    status: str | None = None, include_superseded: bool = False,
+) -> list[dict]:
+    query = "SELECT * FROM kb_document WHERE work_id=?"
+    params: list[Any] = [work_id]
+    if kind:
+        query += " AND kind=?"
+        params.append(kind)
+    if status:
+        query += " AND status=?"
+        params.append(status)
+    elif not include_superseded:
+        query += " AND status!='superseded'"
+    query += " ORDER BY kind, scope_key, version DESC"
+    with db.connection() as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [_document_row(row) for row in rows]
+
+
+def set_document_projection(
+    db: Any, document_id: str, status: str, error: str | None = None,
+) -> dict:
+    if status not in {"not_applicable", "pending", "done", "failed"}:
+        raise ValueError("invalid projection status")
+    with db.transaction() as connection:
+        connection.execute(
+            "UPDATE kb_document SET projection_status=?, projection_error=? WHERE id=?",
+            (status, error, document_id),
+        )
+    with db.connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM kb_document WHERE id=?", (document_id,),
+        ).fetchone()
+    if row is None:
+        raise ValueError("document not found")
+    return _document_row(row)
+
+
+def reproject_document(
+    db: Any, work_id: str, kind: str, scope_key: str, version: int,
+) -> dict:
+    from .archive_extraction import _project_chapter_memory
+
+    document = get_document(
+        db, work_id, kind, scope_key, version=int(version),
+    )
+    if document is None:
+        raise ValueError("document not found")
+    if kind != "chapter_memory":
+        raise ValueError("only chapter_memory can be reprojected")
+    if document["status"] != "active":
+        raise ValueError("only active documents can be reprojected")
+    match = re.match(r"chapter:(\d+)$", scope_key)
+    if not match:
+        raise ValueError("invalid chapter_memory scope_key")
+    chapter_index = int(match.group(1))
+    content = document.get("content")
+    if not isinstance(content, dict):
+        raise ValueError("document content is not an object")
+    try:
+        projection = _project_chapter_memory(
+            db, work_id, chapter_index, content, document["id"],
+        )
+    except Exception as exc:  # noqa: BLE001 - expose on the document
+        set_document_projection(
+            db, document["id"], "failed", f"{type(exc).__name__}: {exc}",
+        )
+        return {
+            "document": get_document(
+                db, work_id, kind, scope_key, version=int(version),
+            ),
+            "projection_error": f"{type(exc).__name__}: {exc}",
+        }
+    set_document_projection(db, document["id"], "done")
+    return {
+        "document": get_document(
+            db, work_id, kind, scope_key, version=int(version),
+        ),
+        "projection": projection,
+    }
+
+
+def search_documents(
+    db: Any, work_id: str, query: str, *, kind: str | None = None,
+    limit: int = 10,
+) -> list[dict]:
+    from .tokenizer import fts_query
+
+    expression = fts_query(query)
+    if not expression:
+        return []
+    sql = """
+        SELECT d.id, d.kind, d.scope_key, d.version, d.status,
+               d.source_chapters_json, f.text AS snippet,
+               bm25(kb_document_fts) AS score
+        FROM kb_document_fts AS f
+        JOIN kb_document AS d ON d.id = f.document_id
+        WHERE f.tokens MATCH ? AND d.work_id=? AND d.status='active'
+    """
+    params: list[Any] = [expression, work_id]
+    if kind:
+        sql += " AND d.kind=?"
+        params.append(kind)
+    sql += " ORDER BY score LIMIT ?"
+    params.append(max(1, min(100, int(limit))) * 5)
+    with db.connection() as connection:
+        rows = connection.execute(sql, params).fetchall()
+    hits: dict[str, dict] = {}
+    for row in rows:
+        document_id = row["id"]
+        if document_id in hits:
+            continue
+        hits[document_id] = {
+            "document_id": document_id,
+            "kind": row["kind"],
+            "scope_key": row["scope_key"],
+            "version": row["version"],
+            "status": row["status"],
+            "source_chapters": json.loads(
+                row["source_chapters_json"] or "[]"
+            ),
+            "snippet": row["snippet"],
+            "score": row["score"],
+        }
+        if len(hits) >= limit:
+            break
+    return list(hits.values())
+
+
+def _index_document(
+    connection: Any, document_id: str, work_id: str, kind: str,
+    scope_key: str, text: str,
+) -> None:
+    from .tokenizer import fts_document
+
+    if not text.strip():
+        return
+    size = 1_000
+    overlap = 100
+    offset = 0
+    chunk_index = 0
+    while offset < len(text):
+        chunk = text[offset: offset + size]
+        connection.execute(
+            """
+            INSERT INTO kb_document_fts(
+                document_id, work_id, kind, scope_key, chunk_index, text, tokens
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                document_id, work_id, kind, scope_key, chunk_index,
+                chunk, fts_document(chunk),
+            ),
+        )
+        chunk_index += 1
+        if offset + size >= len(text):
+            break
+        offset += size - overlap
+
+
+def _document_row(row: Any) -> dict:
+    item = dict(row)
+    item["content"] = json.loads(item.pop("content_json") or "null")
+    item["source_chapters"] = json.loads(
+        item.pop("source_chapters_json", "[]") or "[]"
+    )
+    item["warnings"] = json.loads(item.pop("warnings_json", "[]") or "[]")
+    return item
+
+
 def compile_archive(
     db: Any, work_id: str, chapter_index: int, outline: str = "",
+    *, allow_future: bool = False,
 ) -> dict:
+    if chapter_index < 1:
+        raise ValueError("chapter_index must be at least 1")
+    with db.connection() as connection:
+        row = connection.execute(
+            "SELECT MAX(chapter_index) FROM kb_source_meta WHERE work_id = ?",
+            (work_id,),
+        ).fetchone()
+    latest_chapter = row[0] if row is not None else None
+    if (
+        latest_chapter is not None
+        and chapter_index > int(latest_chapter) + 1
+        and not allow_future
+    ):
+        raise ValueError(
+            f"chapter_index {chapter_index} is beyond the next chapter after "
+            f"{latest_chapter}; pass allow_future=true to compile ahead"
+        )
     profile = get_work_profile(db, work_id)
-    entities = list_entities(db, work_id)
+    entities = list_entities(db, work_id, at_chapter=chapter_index)
     active = {entity["canonical_name"]: entity for entity in entities}
     matched = [
         entity for entity in entities
@@ -743,7 +1163,9 @@ def compile_archive(
     protagonist_entity = active.get(protagonist) if protagonist else None
     if protagonist:
         matched_names = {entity["canonical_name"] for entity in matched}
-        for related in related_entities(db, work_id, protagonist, limit=10):
+        for related in related_entities(
+            db, work_id, protagonist, limit=10, at_chapter=chapter_index,
+        ):
             if related["name"] in matched_names:
                 continue
             entity = active.get(related["name"])
@@ -832,6 +1254,45 @@ def compile_archive(
                         f"- 倒计时：{timer['payload'].get('name')} "
                         f"剩余 {timer['payload'].get('chapters_remaining')} 章"
                     )
+        elif kind == "chapter_memory":
+            records = []
+            for record_category in ("scene", "cognition", "thread", "state_delta"):
+                records.extend(list_story_records(
+                    db, work_id, category=record_category,
+                    at_chapter=chapter_index,
+                ))
+            if not records:
+                sections.append("- （暂无章节记忆）")
+            for record in records:
+                payload = record["payload"]
+                if record["category"] == "scene":
+                    sections.append(
+                        f"- [{payload.get('name') or '场景'}] "
+                        f"{payload.get('causal_paragraph') or ''}"
+                    )
+                elif record["category"] == "cognition":
+                    label = {
+                        "judgment": "判断",
+                        "rumor": "传闻",
+                        "lie": "谎言",
+                        "update": "认知更新",
+                        "info_gap": "信息差",
+                        "unknown": "未知",
+                    }.get(str(payload.get("type") or ""), payload.get("type"))
+                    sections.append(
+                        f"- {label}·{payload.get('holder')}："
+                        f"{payload.get('content') or ''}"
+                    )
+                elif record["category"] == "thread":
+                    sections.append(
+                        f"- [{payload.get('thread')}·{payload.get('transition')}] "
+                        f"{payload.get('next_condition') or ''}"
+                    )
+                else:
+                    sections.append(
+                        f"- {payload.get('category')}·{payload.get('entity')}："
+                        f"{payload.get('field') or ''} {payload.get('to') or ''}"
+                    )
         else:
             sections.append("- （未知模块类型）")
 
@@ -895,32 +1356,51 @@ def _audit_structured_changes(
     chapter_index: int | None, profile: dict, protagonist: str | None,
 ) -> list[dict]:
     violations: list[dict] = []
-    snapshot = (
-        get_snapshot(db, work_id, protagonist, at_chapter=chapter_index)
-        if protagonist else None
-    )
-    dynamic = (snapshot or {}).get("dynamic_state", {})
-    ledger = dynamic.get("inventory_ledger", {})
-    balances = {
-        str(name): value
-        for name, value in {
-            **dynamic.get("resources", {}),
-            **ledger.get("currency", {}),
-        }.items()
+    state_cache: dict[str, dict] = {}
+
+    def canonical(name: str) -> str:
+        entity = resolve_entity(db, work_id, name)
+        return entity["canonical_name"] if entity is not None else name
+
+    def state_for(name: str) -> dict:
+        key = canonical(name)
+        if key not in state_cache:
+            snapshot = get_snapshot(db, work_id, key, at_chapter=chapter_index)
+            dynamic = (snapshot or {}).get("dynamic_state", {})
+            ledger = dynamic.get("inventory_ledger", {})
+            state_cache[key] = {
+                "balances": {
+                    **ledger.get("currency", {}),
+                    **dynamic.get("resources", {}),
+                },
+                "inventory": {
+                    str(item): value
+                    for item, value in (dynamic.get("inventory") or {}).items()
+                },
+            }
+        return state_cache[key]
+
+    debt_entities = {
+        canonical(str(change.get("entity") or ""))
+        for change in changes
+        if isinstance(change, dict) and str(change.get("kind") or "") == "debt"
     }
-    inventory = {
-        str(name): value for name, value in (dynamic.get("inventory") or {}).items()
-    }
-    allow_debt = bool(profile.get("allow_debt"))
     resource_changes = 0
+    all_balances: dict[str, Any] = {}
     for change in changes:
         if not isinstance(change, dict):
             continue
+        entity_name = str(change.get("entity") or "").strip()
+        entity_key = canonical(entity_name)
+        state = state_for(entity_name)
+        balances = state["balances"]
+        inventory = state["inventory"]
+        all_balances.update(balances)
         evidence = str(change.get("evidence") or "").strip()
         if evidence and evidence not in text:
             violations.append({
                 "type": "EVIDENCE_MISMATCH",
-                "entity": change.get("entity"),
+                "entity": entity_key,
                 "detail": f"证据未在正文中逐字出现：{evidence[:40]}",
             })
         kind = str(change.get("kind") or "").strip()
@@ -940,7 +1420,7 @@ def _audit_structured_changes(
             ):
                 violations.append({
                     "type": "ITEM_ERROR",
-                    "entity": change.get("entity"),
+                    "entity": entity_key,
                     "detail": f"{item} 移除 {quantity}，当前持有 {current}",
                 })
             continue
@@ -953,23 +1433,26 @@ def _audit_structured_changes(
             continue
         amount = _parse_amount(str(change.get("amount") or ""))
         direction = str(change.get("direction") or "").strip()
+        has_debt = (
+            entity_key in debt_entities
+            or bool(change.get("debt"))
+            or bool(change.get("allow_debt"))
+        )
         if amount is not None and direction == "decrease":
-            if amount > balance and not (
-                allow_debt or change.get("allow_debt") or change.get("debt")
-            ):
+            if amount > balance and not has_debt:
                 violations.append({
                     "type": "LEDGER_ERROR",
-                    "entity": protagonist,
+                    "entity": entity_key,
                     "detail": f"{field} 支出 {amount}，当前账面 {balance}",
                 })
             continue
         if amount is not None and direction == "increase":
             continue
         if amount is not None and direction == "set":
-            if amount < 0 and not allow_debt:
+            if amount < 0 and not has_debt:
                 violations.append({
                     "type": "LEDGER_ERROR",
-                    "entity": protagonist,
+                    "entity": entity_key,
                     "detail": f"{field} 结算为负数：{amount}",
                 })
             continue
@@ -978,19 +1461,19 @@ def _audit_structured_changes(
         if start is not None and start != balance:
             violations.append({
                 "type": "LEDGER_ERROR",
-                "entity": protagonist,
+                "entity": entity_key,
                 "detail": f"{field} 起始 {start}，当前账面 {balance}",
             })
-        elif end is not None and end < 0 and not allow_debt:
+        elif end is not None and end < 0 and not has_debt:
             violations.append({
                 "type": "LEDGER_ERROR",
-                "entity": protagonist,
+                "entity": entity_key,
                 "detail": f"{field} 结算为负数：{end}",
             })
     units = [
         str(unit) for unit in (profile.get("resource_units") or [])
         if str(unit).strip()
-    ] or sorted(balances)
+    ] or sorted(all_balances)
     if resource_changes == 0 and units:
         mentioned = [unit for unit in units if unit in text]
         if mentioned:
@@ -1008,7 +1491,9 @@ def audit_draft(
     skip_ledger_scan: bool = False,
 ) -> dict:
     violations: list[dict] = []
-    entities = list_entities(db, work_id, include_inactive=True)
+    entities = list_entities(
+        db, work_id, include_inactive=True, at_chapter=chapter_index,
+    )
     for entity in entities:
         snapshot = get_snapshot(db, work_id, entity["canonical_name"], at_chapter=chapter_index)
         status = snapshot["lifecycle_status"] if snapshot else entity.get("lifecycle_status")
@@ -1033,8 +1518,8 @@ def audit_draft(
         balances = {
             str(name): value
             for name, value in {
-                **dynamic.get("resources", {}),
                 **ledger.get("currency", {}),
+                **dynamic.get("resources", {}),
             }.items()
         }
         units = [

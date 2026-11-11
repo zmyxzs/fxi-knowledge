@@ -1,0 +1,3 @@
+{"id":"dialogue_gap","chapter_index":1,"text":"第1章 拜师\n杨凌走进山门，守门弟子拦住他盘问。杨凌出示赵洵信物，被放行。\n赵洵收他为徒，说：从今天起，你是青云山弟子。\n杨凌心里怀疑赵洵另有目的，但没有说出口。","expected":{"scene_keywords":["山门","拜师"],"cognition_types":["judgment"],"state_categories":[],"thread_keywords":[]}}
+{"id":"combat_panel","chapter_index":2,"text":"第2章 试炼\n杨凌在试炼场对阵马东。马东修为高一层，杨凌先用灵剑试探，被击退。\n杨凌改用近身，击中马东破绽，赢下比试。面板显示：修为加一，灵石加十。","expected":{"scene_keywords":["试炼","比试"],"cognition_types":[],"state_categories":["resource","character"],"thread_keywords":[]}}
+{"id":"foreshadow","chapter_index":3,"text":"第3章 裂痕\n赵洵把一柄有裂痕的灵剑交给杨凌，说此剑来历不明。\n杨凌发现剑柄刻着前朝文字，决定暗中查访。马东看见后神色一变。","expected":{"scene_keywords":["灵剑","刻字"],"cognition_types":["judgment"],"state_categories":["item"],"thread_keywords":["裂痕"]}}

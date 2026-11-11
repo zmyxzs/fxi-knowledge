@@ -1,0 +1,197 @@
+{
+  "root": "D:\\文本\\素材",
+  "model": "global:deepseek-v4.1-flash",
+  "books": 6,
+  "chapters": 12,
+  "valid": 12,
+  "hard_failures": 0,
+  "projection_failures": 0,
+  "warnings_total": 1,
+  "warning_types": {
+    "scenes[1]": 1
+  },
+  "results": [
+    {
+      "book": "十日终焉",
+      "file": "ch001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 5,
+        "cognition": 5,
+        "thread": 6,
+        "state_delta": 3
+      },
+      "projection_error": null
+    },
+    {
+      "book": "十日终焉",
+      "file": "ch320.md",
+      "chapter": 320,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 6,
+        "cognition": 6,
+        "thread": 4,
+        "state_delta": 1
+      },
+      "projection_error": null
+    },
+    {
+      "book": "大王饶命",
+      "file": "ch001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 4,
+        "cognition": 8,
+        "thread": 5,
+        "state_delta": 4
+      },
+      "projection_error": null
+    },
+    {
+      "book": "大王饶命",
+      "file": "ch335.md",
+      "chapter": 335,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 4,
+        "cognition": 7,
+        "thread": 4,
+        "state_delta": 1
+      },
+      "projection_error": null
+    },
+    {
+      "book": "我在精神病院学斩神",
+      "file": "ch001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 5,
+        "cognition": 8,
+        "thread": 4,
+        "state_delta": 0
+      },
+      "projection_error": null
+    },
+    {
+      "book": "我在精神病院学斩神",
+      "file": "ch1829.md",
+      "chapter": 1829,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 3,
+        "cognition": 8,
+        "thread": 6,
+        "state_delta": 3
+      },
+      "projection_error": null
+    },
+    {
+      "book": "网游之天谴修罗",
+      "file": "0001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 5,
+        "cognition": 5,
+        "thread": 4,
+        "state_delta": 3
+      },
+      "projection_error": null
+    },
+    {
+      "book": "网游之天谴修罗",
+      "file": "0427.md",
+      "chapter": 427,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 5,
+        "cognition": 6,
+        "thread": 4,
+        "state_delta": 3
+      },
+      "projection_error": null
+    },
+    {
+      "book": "超神机械师",
+      "file": "ch001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 4,
+        "cognition": 13,
+        "thread": 5,
+        "state_delta": 8
+      },
+      "projection_error": null
+    },
+    {
+      "book": "超神机械师",
+      "file": "ch268.md",
+      "chapter": 268,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 4,
+        "cognition": 10,
+        "thread": 6,
+        "state_delta": 3
+      },
+      "projection_error": null
+    },
+    {
+      "book": "逆天邪神",
+      "file": "0001.md",
+      "chapter": 1,
+      "valid": true,
+      "issues": [],
+      "warnings": [],
+      "projection": {
+        "scene": 4,
+        "cognition": 4,
+        "thread": 3,
+        "state_delta": 1
+      },
+      "projection_error": null
+    },
+    {
+      "book": "逆天邪神",
+      "file": "1022.md",
+      "chapter": 1022,
+      "valid": true,
+      "issues": [],
+      "warnings": [
+        "scenes[1] 的 evidence 未逐字出现：我从不会让自己的女人受委屈"
+      ],
+      "projection": {
+        "scene": 5,
+        "cognition": 4,
+        "thread": 5,
+        "state_delta": 2
+      },
+      "projection_error": null
+    }
+  ]
+}

@@ -14,6 +14,7 @@ import importlib.util
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import uuid
@@ -164,7 +165,37 @@ OPENAPI_SPEC: dict[str, Any] = {
         "/api/search": {"get": {"summary": "Lexical search with cards"}},
         "/api/story": {"get": {"summary": "Structured story records"}},
         "/api/entity": {"get": {"summary": "Entity dossier"}},
-        "/api/audit": {"get": {"summary": "Consistency audit"}},
+        "/api/work_types": {
+            "get": {"summary": "Registered work types"},
+            "post": {"summary": "Register work type", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/work_profile": {
+            "get": {"summary": "Work profile"},
+            "post": {"summary": "Update work profile", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/story_record": {
+            "get": {"summary": "Archive story records"},
+            "post": {"summary": "Add archive story record", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/compile_archive": {
+            "post": {"summary": "Compile archive modules", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/documents": {
+            "get": {"summary": "List or read document artifacts"},
+            "post": {"summary": "Save document artifact", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/documents/review": {
+            "post": {"summary": "Accept or reject artifact", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/documents/reproject": {
+            "post": {"summary": "Replay chapter-memory projection", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/documents/search": {"get": {"summary": "Search active document artifacts"}},
+        "/api/context": {"get": {"summary": "Assemble next-chapter context"}},
+        "/api/audit": {
+            "get": {"summary": "Consistency audit"},
+            "post": {"summary": "Draft audit", "security": [{"ApiKeyAuth": []}]},
+        },
         "/api/parse": {
             "post": {"summary": "Start async parse", "security": [{"ApiKeyAuth": []}]},
         },
@@ -351,23 +382,35 @@ class KnowledgeServer:
 
     def story(self, work: str | None, category: str | None, page_size: int) -> dict:
         row = self.resolve_work(work)
-        page = self.knowledge.query_story_knowledge(
-            space=self.space, work_id=row["id"], purpose="work_fact",
-            branch=self.branch, category=category, page_size=page_size,
+        records = archive.list_story_records(
+            self.db, row["id"], category=category,
         )
+        items = []
+        for record in records[: max(1, int(page_size))]:
+            payload = record["payload"]
+            items.append({
+                "category": record["category"],
+                "chapter_index": record["chapter_index"],
+                "subject": (
+                    payload.get("entity") or payload.get("holder")
+                    or payload.get("thread") or payload.get("name") or ""
+                ),
+                "predicate": (
+                    payload.get("field") or payload.get("kind")
+                    or record["category"]
+                ),
+                "value": (
+                    payload.get("value") or payload.get("to")
+                    or payload.get("content") or payload.get("causal_paragraph")
+                    or payload.get("next_condition") or ""
+                ),
+                "quote": payload.get("evidence"),
+            })
         return {
             "work": row["title"],
-            "total": page["total_count"],
-            "items": [
-                {
-                    "category": item.get("category"),
-                    "subject": item.get("identity_display_name") or item.get("subject"),
-                    "predicate": item.get("predicate"),
-                    "value": item.get("value"),
-                    "quote": (item.get("evidence") or {}).get("quote"),
-                }
-                for item in page["items"]
-            ],
+            "source": "archive",
+            "total": len(records),
+            "items": items,
         }
 
     def entity(self, name: str, work: str | None, at_chapter: int | None = None) -> dict:
@@ -380,7 +423,9 @@ class KnowledgeServer:
             return {
                 "work": row["title"], "archive": True, **archived,
                 "snapshot": snapshot,
-                "related": archive.related_entities(self.db, row["id"], name),
+                "related": archive.related_entities(
+                    self.db, row["id"], name, at_chapter=at_chapter,
+                ),
             }
         dossier = self.knowledge.query_entity_dossier(
             space=self.space, work_id=row["id"], entity=name, branch=self.branch,
@@ -466,9 +511,14 @@ class KnowledgeServer:
             )
         return {"work": row["title"], **entity, "snapshot": snapshot}
 
-    def compile_archive(self, work: str | None, chapter: int, outline: str) -> dict:
+    def compile_archive(
+        self, work: str | None, chapter: int, outline: str,
+        *, allow_future: bool = False,
+    ) -> dict:
         row = self.resolve_work(work)
-        result = archive.compile_archive(self.db, row["id"], chapter, outline)
+        result = archive.compile_archive(
+            self.db, row["id"], chapter, outline, allow_future=allow_future,
+        )
         result["work"] = row["title"]
         return result
 
@@ -505,6 +555,54 @@ class KnowledgeServer:
         )
         report["method"] = "structured"
         report["extracted_changes"] = len(changes)
+        entities = []
+        for entity in archive.list_entities(
+            self.db, row["id"], include_inactive=True, at_chapter=chapter,
+        ):
+            snapshot = archive.get_snapshot(
+                self.db, row["id"], entity["canonical_name"], at_chapter=chapter,
+            )
+            entities.append({
+                **entity,
+                "dynamic_state": snapshot["dynamic_state"] if snapshot else {},
+                "lifecycle_status": (
+                    snapshot["lifecycle_status"] if snapshot
+                    else entity.get("lifecycle_status")
+                ),
+            })
+        redlines = [
+            str(record["payload"].get("text") or record["payload"].get("rule") or "")
+            for record in archive.list_story_records(
+                self.db, row["id"], category="redline",
+            )
+            if record["payload"].get("text") or record["payload"].get("rule")
+        ]
+        has_hard_rules = any(entity.get("hard_rules") for entity in entities)
+        if has_hard_rules or redlines:
+            try:
+                semantic = asyncio.run(archive_extraction.audit_with_openai(
+                    text, entities, redlines, chapter or 0,
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                ))
+            except Exception as exc:  # noqa: BLE001 - keep structured result
+                report["hard_rule_check"] = "failed"
+                report["hard_rule_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                seen = {
+                    (item["type"], item["detail"])
+                    for item in report["violations"]
+                }
+                for violation in semantic:
+                    key = (violation["type"], violation["detail"])
+                    if key not in seen:
+                        report["violations"].append(violation)
+                        seen.add(key)
+                report["hard_rule_check"] = "checked"
+                report["passed"] = not report["violations"]
+        else:
+            report["hard_rule_check"] = "skipped_no_rules"
         return report
 
     def add_story_record(self, work: str | None, body: dict) -> dict:
@@ -527,6 +625,193 @@ class KnowledgeServer:
             "records": archive.list_story_records(
                 self.db, row["id"], category=category, at_chapter=at_chapter,
             ),
+        }
+
+    def documents(
+        self, work: str | None, kind: str | None, scope_key: str | None,
+        version: int | None, status: str | None = None,
+    ) -> dict:
+        row = self.resolve_work(work)
+        if scope_key:
+            document = archive.get_document(
+                self.db, row["id"], str(kind or ""), str(scope_key),
+                version=version,
+            )
+            return {"work": row["title"], "document": document}
+        return {
+            "work": row["title"],
+            "documents": archive.list_documents(
+                self.db, row["id"], kind=kind, status=status,
+            ),
+        }
+
+    def search_documents(
+        self, work: str | None, query: str, kind: str | None, limit: int,
+    ) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            "query": query,
+            "hits": archive.search_documents(
+                self.db, row["id"], query, kind=kind, limit=limit,
+            ),
+        }
+
+    def save_document(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        kind = str(body.get("kind") or "").strip()
+        scope_key = str(body.get("scope_key") or "").strip()
+        if not kind or not scope_key:
+            raise ValueError("kind and scope_key are required")
+        content = body.get("content")
+        if content is None:
+            raise ValueError("content is required")
+        source_chapters = body.get("source_chapters") or []
+        if not isinstance(source_chapters, list) or any(
+            not isinstance(item, int) for item in source_chapters
+        ):
+            raise ValueError("source_chapters must be a list of integers")
+        status = str(body.get("status") or "draft")
+        document = archive.save_document(
+            self.db, row["id"], kind, scope_key, content,
+            markdown=body.get("markdown"),
+            source_chapters=source_chapters,
+            status=status,
+            prompt_name=body.get("prompt_name"),
+            prompt_version=body.get("prompt_version"),
+            model=body.get("model"),
+            schema_version=int(body.get("schema_version") or 1),
+        )
+        return {"work": row["title"], "document": document}
+
+    def review_document(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        version = body.get("version")
+        if version is None:
+            raise ValueError("version is required")
+        base_version = body.get("base_version")
+        document = archive.review_document(
+            self.db, row["id"],
+            str(body.get("kind") or ""),
+            str(body.get("scope_key") or ""),
+            int(version),
+            str(body.get("action") or ""),
+            base_version=int(base_version) if base_version is not None else None,
+        )
+        return {"work": row["title"], "document": document}
+
+    def reproject_document(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        version = body.get("version")
+        if version is None:
+            raise ValueError("version is required")
+        result = archive.reproject_document(
+            self.db, row["id"],
+            str(body.get("kind") or ""),
+            str(body.get("scope_key") or ""),
+            int(version),
+        )
+        return {"work": row["title"], **result}
+
+    def context(
+        self, work: str | None, chapter: int | None, max_chars: int = 60_000,
+    ) -> dict:
+        row = self.resolve_work(work)
+        chapter_index = (
+            int(chapter) if chapter is not None
+            else archive.next_chapter_index(self.db, row["id"])
+        )
+        max_chars = max(5_000, min(200_000, int(max_chars or 60_000)))
+        candidates: list[tuple[str, str, dict | None, str]] = []
+
+        long_doc = archive.get_document(
+            self.db, row["id"], "long_term_archive", "main", status="active",
+        )
+        if long_doc:
+            content = long_doc.get("content") or {}
+            text = (
+                str(content.get("archive") or "")
+                if isinstance(content, dict) else str(content)
+            )
+            candidates.append(("long_term_archive", "长期档案", long_doc, text))
+
+        chapter_doc = None
+        for index in range(chapter_index - 1, 0, -1):
+            candidate = archive.get_document(
+                self.db, row["id"], "chapter_memory", f"chapter:{index}",
+                status="active",
+            )
+            if candidate:
+                chapter_doc = candidate
+                break
+        if chapter_doc:
+            candidates.append((
+                "chapter_memory", "上一章章节记忆", chapter_doc,
+                str(chapter_doc.get("content_markdown") or ""),
+            ))
+
+        storyline_doc = None
+        storyline_end = -1
+        for document in archive.list_documents(
+            self.db, row["id"], kind="storyline_network",
+        ):
+            if document.get("status") != "active":
+                continue
+            match = re.match(r"batch:(\d+)-(\d+)$", str(document.get("scope_key") or ""))
+            if match and int(match.group(2)) < chapter_index:
+                end = int(match.group(2))
+                if end > storyline_end:
+                    storyline_end = end
+                    storyline_doc = document
+        if storyline_doc:
+            candidates.append((
+                "storyline_network", "当前线网", storyline_doc,
+                str(storyline_doc.get("content_markdown") or ""),
+            ))
+
+        try:
+            compiled = archive.compile_archive(
+                self.db, row["id"], chapter_index, "", allow_future=True,
+            )["compiled_archive_markdown"]
+        except ValueError:
+            compiled = ""
+        if compiled:
+            candidates.append(("compiled_archive", "编译档案", None, compiled))
+
+        sections = []
+        remaining = max_chars
+        truncated = False
+        for kind, label, document, content in candidates:
+            if not content:
+                continue
+            block = f"## {label}\n{content}"
+            if remaining <= 0:
+                truncated = True
+                continue
+            if len(block) > remaining:
+                marker = "\n…（已按预算截断）"
+                if remaining > len(marker):
+                    block = block[: remaining - len(marker)] + marker
+                else:
+                    block = block[:remaining]
+                truncated = True
+            sections.append({
+                "kind": kind,
+                "label": label,
+                "scope_key": document.get("scope_key") if document else None,
+                "version": document.get("version") if document else None,
+                "content": block,
+                "chars": len(block),
+            })
+            remaining -= len(block)
+        return {
+            "work": row["title"],
+            "chapter_index": chapter_index,
+            "budget_chars": max_chars,
+            "total_chars": sum(section["chars"] for section in sections),
+            "truncated": truncated,
+            "sections": sections,
+            "markdown": "\n\n".join(section["content"] for section in sections),
         }
 
     def audit(self, work: str | None, *, llm: bool = False) -> dict:
@@ -689,9 +974,16 @@ class KnowledgeServer:
     def start_parse(
         self, work: str | None, source_ids: list[str] | None,
         *, mode: str = "state_update", force: bool = False,
+        round_number: int = 1, base_scope_key: str | None = None,
     ) -> dict:
-        if mode not in {"state_update", "deconstruct_extract", "memory"}:
-            raise ValueError("mode must be state_update, deconstruct_extract or memory")
+        if mode not in {
+            "state_update", "deconstruct_extract", "memory", "chapter_memory",
+            "archive_update", "storyline_network",
+        }:
+            raise ValueError(
+                "mode must be state_update, deconstruct_extract, memory, "
+                "chapter_memory, archive_update or storyline_network"
+            )
         row = self.resolve_work(work)
         ids = list(source_ids) if source_ids else [
             source["id"]
@@ -699,15 +991,27 @@ class KnowledgeServer:
                 space=self.space, work_id=row["id"],
             )
         ]
+        ids = list(dict.fromkeys(ids))
         if not ids:
             raise ValueError("no sources to parse")
+        allowed = {
+            source["id"] for source in self.knowledge.list_sources(
+                space=self.space, work_id=row["id"],
+            )
+        }
+        unknown = [source_id for source_id in ids if source_id not in allowed]
+        if unknown:
+            raise ValueError(
+                "source_ids are not in this work: " + ", ".join(unknown[:5])
+            )
         self._llm_route()
         job_id = uuid.uuid4().hex
         self.jobs[job_id] = {
             "id": job_id, "status": "queued", "work": row["title"],
             "sources": ids, "batch_id": None, "error": None, "summary": None,
             "progress": None, "mode": mode, "archive": None,
-            "force": force,
+            "force": force, "round": int(round_number),
+            "base_scope_key": base_scope_key,
         }
         self._save_jobs()
         threading.Thread(
@@ -738,6 +1042,38 @@ class KnowledgeServer:
         )
         knowledge.set_writing_narrative_order_reader(self._narrative_reader(row["id"]))
         mode = self.jobs.get(job_id, {}).get("mode") or "state_update"
+        if mode == "storyline_network":
+            self._update_job(job_id, status="running")
+            result = await self._run_storyline_network(
+                job_id, knowledge, row, ids,
+            )
+            status = "completed" if result.get("status") == "completed" else "failed"
+            self._update_job(
+                job_id, status=status, archive=result,
+                summary={"storyline_network": result}, error=result.get("error"),
+            )
+            db.close()
+            return
+        if mode == "archive_update":
+            self._update_job(job_id, status="running")
+            result = await self._run_long_term_archive_update(knowledge, row, ids)
+            status = "completed" if result.get("status") == "completed" else "failed"
+            self._update_job(
+                job_id, status=status, archive=result,
+                summary={"archive_update": result}, error=result.get("error"),
+            )
+            db.close()
+            return
+        if mode == "chapter_memory":
+            self._update_job(job_id, status="running")
+            result = await self._run_chapter_memory(knowledge, row, ids)
+            status = "completed" if result.get("status") == "completed" else "failed"
+            self._update_job(
+                job_id, status=status, archive=result,
+                summary={"chapter_memory": result}, error=result.get("error"),
+            )
+            db.close()
+            return
         if mode == "memory":
             self._update_job(job_id, status="running")
             result = await self._run_memory_update(knowledge, row, ids)
@@ -816,6 +1152,221 @@ class KnowledgeServer:
                 (batch_id,),
             ).fetchone()
         return str(row[0]) if row is not None else None
+
+    async def _run_storyline_network(
+        self, job_id: str, knowledge: Any, row: dict, ids: list[str],
+    ) -> dict:
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            return {
+                "status": "skipped", "mode": "storyline_network",
+                "reason": "LLM is not configured",
+            }
+        job = self.jobs.get(job_id, {})
+        round_number = int(job.get("round") or 1)
+        base_scope_key = job.get("base_scope_key")
+        chapters = []
+        try:
+            for source_id in ids:
+                meta = archive.get_source_meta(self.db, source_id)
+                text = str(meta.get("content_raw") or "")
+                if not text:
+                    current = knowledge.repository.get_source(
+                        source_id, content_offset=0, content_limit=50_000,
+                        include_evidence=False,
+                    )
+                    text = str((current or {}).get("content") or "")
+                if not text:
+                    continue
+                chapter_index = (
+                    int(meta["chapter_index"])
+                    if meta.get("chapter_index") is not None
+                    else archive.next_chapter_index(self.db, row["id"])
+                )
+                chapters.append({"chapter_index": chapter_index, "text": text})
+            if not chapters:
+                return {
+                    "status": "failed", "mode": "storyline_network",
+                    "error": "no chapter text",
+                }
+            if round_number == 2:
+                if not base_scope_key:
+                    return {
+                        "status": "failed", "mode": "storyline_network",
+                        "error": "base_scope_key is required for round 2",
+                    }
+                base = archive.get_document(
+                    self.db, row["id"], "storyline_network", base_scope_key,
+                    status="active",
+                )
+                if base is None or not isinstance(base.get("content"), dict):
+                    return {
+                        "status": "failed", "mode": "storyline_network",
+                        "error": f"base storyline network not found: {base_scope_key}",
+                    }
+                base_network = str(base["content"].get("network") or "")
+                output = await archive_extraction.extract_storyline_network_with_openai(
+                    [],
+                    base_network=base_network,
+                    evidence_chapters=chapters,
+                    work_title=row["title"],
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                scope_key = base_scope_key
+                source_chapters = list(base.get("source_chapters") or [])
+                previous_network = base_network
+            else:
+                output = await archive_extraction.extract_storyline_network_with_openai(
+                    chapters,
+                    work_title=row["title"],
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                indices = [chapter["chapter_index"] for chapter in chapters]
+                scope_key = f"batch:{min(indices)}-{max(indices)}"
+                source_chapters = indices
+                previous_network = ""
+            result = archive_extraction.apply_storyline_network(
+                self.db, row["id"], output,
+                scope_key=scope_key,
+                source_chapters=source_chapters,
+                round_number=round_number,
+                base_scope_key=base_scope_key,
+                previous_network=previous_network,
+                model=self.llm_model,
+            )
+            return {
+                "status": "completed", "mode": "storyline_network",
+                "scope_key": scope_key, **result,
+            }
+        except Exception as exc:  # noqa: BLE001 - surface on the job
+            return {
+                "status": "failed", "mode": "storyline_network",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    async def _run_long_term_archive_update(
+        self, knowledge: Any, row: dict, ids: list[str],
+    ) -> dict:
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            return {
+                "status": "skipped", "mode": "archive_update",
+                "reason": "LLM is not configured",
+            }
+        chapters = []
+        try:
+            for source_id in ids:
+                meta = archive.get_source_meta(self.db, source_id)
+                text = str(meta.get("content_raw") or "")
+                if not text:
+                    current = knowledge.repository.get_source(
+                        source_id, content_offset=0, content_limit=50_000,
+                        include_evidence=False,
+                    )
+                    text = str((current or {}).get("content") or "")
+                if not text:
+                    continue
+                chapter_index = (
+                    int(meta["chapter_index"])
+                    if meta.get("chapter_index") is not None
+                    else archive.next_chapter_index(self.db, row["id"])
+                )
+                chapters.append({"chapter_index": chapter_index, "text": text})
+            if not chapters:
+                return {
+                    "status": "failed", "mode": "archive_update",
+                    "error": "no chapter text",
+                }
+            previous = archive.get_document(
+                self.db, row["id"], "long_term_archive", "main", status="active",
+            )
+            previous_archive = ""
+            if previous and isinstance(previous.get("content"), dict):
+                previous_archive = str(previous["content"].get("archive") or "")
+            if not previous_archive:
+                base_chapter = min(
+                    chapter["chapter_index"] for chapter in chapters
+                ) - 1
+                if base_chapter >= 1:
+                    previous_archive = archive.compile_archive(
+                        self.db, row["id"], base_chapter, "",
+                        allow_future=True,
+                    )["compiled_archive_markdown"]
+                else:
+                    previous_archive = "（无原长期档案，这是首次建档）"
+            output = await archive_extraction.extract_archive_update_with_openai(
+                previous_archive, chapters,
+                work_title=row["title"],
+                base_url=self.llm_base_url,
+                api_key=self.llm_api_key,
+                model=self.llm_model,
+            )
+            result = archive_extraction.apply_archive_update(
+                self.db, row["id"], output,
+                source_chapters=[chapter["chapter_index"] for chapter in chapters],
+                previous_archive=previous_archive,
+                model=self.llm_model,
+            )
+            return {
+                "status": "completed", "mode": "archive_update",
+                **result,
+            }
+        except Exception as exc:  # noqa: BLE001 - surface on the job
+            return {
+                "status": "failed", "mode": "archive_update",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    async def _run_chapter_memory(
+        self, knowledge: Any, row: dict, ids: list[str],
+    ) -> dict:
+        if not (self.llm_base_url and self.llm_api_key and self.llm_model):
+            return {
+                "status": "skipped", "mode": "chapter_memory",
+                "reason": "LLM is not configured",
+            }
+        chapters = []
+        try:
+            for source_id in ids:
+                meta = archive.get_source_meta(self.db, source_id)
+                text = str(meta.get("content_raw") or "")
+                if not text:
+                    current = knowledge.repository.get_source(
+                        source_id, content_offset=0, content_limit=50_000,
+                        include_evidence=False,
+                    )
+                    text = str((current or {}).get("content") or "")
+                if not text:
+                    continue
+                chapter_index = (
+                    int(meta["chapter_index"])
+                    if meta.get("chapter_index") is not None
+                    else archive.next_chapter_index(self.db, row["id"])
+                )
+                output = await archive_extraction.extract_chapter_memory_with_openai(
+                    text, chapter_index,
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                chapters.append(archive_extraction.apply_chapter_memory_output(
+                    self.db, row["id"], chapter_index, output,
+                    text=text,
+                    prompt_name="chapter-memory",
+                    prompt_version="4",
+                    model=self.llm_model,
+                ))
+            return {
+                "status": "completed", "mode": "chapter_memory",
+                "chapters": chapters,
+            }
+        except Exception as exc:  # noqa: BLE001 - surface on the job
+            return {
+                "status": "failed", "mode": "chapter_memory",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
 
     async def _run_memory_update(
         self, knowledge: Any, row: dict, ids: list[str],
@@ -966,6 +1517,15 @@ def handler_for(server: KnowledgeServer):
             self.wfile.write(body)
 
         def do_GET(self) -> None:
+            if not self.server.acquire_slot():
+                self._json({"error": "server busy"}, 503)
+                return
+            try:
+                self._do_get()
+            finally:
+                self.server.release_slot()
+
+        def _do_get(self) -> None:
             parsed = urlparse(self.path)
             params = {key: values[0] for key, values in parse_qs(parsed.query).items()}
             try:
@@ -1056,6 +1616,33 @@ def handler_for(server: KnowledgeServer):
                         int(at_chapter) if at_chapter is not None else None,
                     ))
                     return
+                if parsed.path == "/api/documents":
+                    version = params.get("version")
+                    self._json(server.documents(
+                        params.get("work"), params.get("kind"),
+                        params.get("scope_key"),
+                        int(version) if version else None,
+                        params.get("status"),
+                    ))
+                    return
+                if parsed.path == "/api/documents/search":
+                    query = (params.get("q") or "").strip()
+                    if not query:
+                        raise ValueError("q is required")
+                    limit = int(params.get("limit") or 10)
+                    self._json(server.search_documents(
+                        params.get("work"), query, params.get("kind"), limit,
+                    ))
+                    return
+                if parsed.path == "/api/context":
+                    chapter = params.get("chapter")
+                    max_chars = params.get("max_chars")
+                    self._json(server.context(
+                        params.get("work"),
+                        int(chapter) if chapter else None,
+                        int(max_chars) if max_chars else 60_000,
+                    ))
+                    return
                 if parsed.path == "/api/sources":
                     self._json(server.list_sources(params.get("work")))
                     return
@@ -1067,6 +1654,8 @@ def handler_for(server: KnowledgeServer):
                     self._json(server.get_job(parsed.path.rsplit("/", 1)[-1]))
                     return
                 self._json({"error": "not found"}, 404)
+            except archive.DocumentConflictError as exc:
+                self._json({"error": str(exc)}, 409)
             except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001 - surface the error to the caller
@@ -1094,6 +1683,15 @@ def handler_for(server: KnowledgeServer):
             return data
 
         def _handle_write(self, method: str) -> None:
+            if not self.server.acquire_slot():
+                self._json({"error": "server busy"}, 503)
+                return
+            try:
+                self._handle_write_inner(method)
+            finally:
+                self.server.release_slot()
+
+        def _handle_write_inner(self, method: str) -> None:
             if not self._require_write():
                 return
             parsed = urlparse(self.path)
@@ -1129,12 +1727,22 @@ def handler_for(server: KnowledgeServer):
                 if method == "POST" and parts == ["api", "story_record"]:
                     self._json(server.add_story_record(body.get("work"), body), 201)
                     return
+                if method == "POST" and parts == ["api", "documents"]:
+                    self._json(server.save_document(body.get("work"), body), 201)
+                    return
+                if method == "POST" and parts == ["api", "documents", "review"]:
+                    self._json(server.review_document(body.get("work"), body))
+                    return
+                if method == "POST" and parts == ["api", "documents", "reproject"]:
+                    self._json(server.reproject_document(body.get("work"), body))
+                    return
                 if method == "POST" and parts == ["api", "compile_archive"]:
                     chapter = body.get("chapter_index")
                     if chapter is None:
                         raise ValueError("chapter_index is required")
                     self._json(server.compile_archive(
                         body.get("work"), int(chapter), str(body.get("outline") or ""),
+                        allow_future=bool(body.get("allow_future")),
                     ))
                     return
                 if method == "POST" and parts == ["api", "audit"]:
@@ -1159,6 +1767,10 @@ def handler_for(server: KnowledgeServer):
                         body.get("work"), [str(item) for item in ids] if ids else None,
                         mode=str(body.get("mode") or "state_update"),
                         force=bool(body.get("force")),
+                        round_number=int(body.get("round") or 1),
+                        base_scope_key=(
+                            str(body.get("base_scope_key") or "") or None
+                        ),
                     ), 202)
                     return
                 if len(parts) == 3 and parts[:2] == ["api", "works"]:
@@ -1186,6 +1798,8 @@ def handler_for(server: KnowledgeServer):
                         self._json(server.delete_source(source_id))
                         return
                 self._json({"error": "not found"}, 404)
+            except archive.DocumentConflictError as exc:
+                self._json({"error": str(exc)}, 409)
             except ValueError as exc:
                 self._json({"error": str(exc)}, 400)
             except Exception as exc:  # noqa: BLE001 - surface the error to the caller
@@ -1203,6 +1817,31 @@ def handler_for(server: KnowledgeServer):
     return Handler
 
 
+class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+    """Threaded server with a hard cap on concurrently handled requests.
+
+    FXI_KB_MAX_CONCURRENCY defaults to 8. Handlers acquire a slot before
+    doing work and return 503 when the cap is reached, so long LLM audits do
+    not spawn unbounded work on a small VM.
+    """
+
+    daemon_threads = True
+    request_queue_size = 64
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        limit = max(1, min(
+            64, int(os.environ.get("FXI_KB_MAX_CONCURRENCY", "8")),
+        ))
+        self._request_slots = threading.BoundedSemaphore(limit)
+
+    def acquire_slot(self) -> bool:
+        return self._request_slots.acquire(blocking=False)
+
+    def release_slot(self) -> None:
+        self._request_slots.release()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--database", type=Path, required=True)
@@ -1210,7 +1849,7 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8766)
     args = parser.parse_args()
     server = KnowledgeServer(args.database)
-    httpd = ThreadingHTTPServer((args.host, args.port), handler_for(server))
+    httpd = BoundedThreadingHTTPServer((args.host, args.port), handler_for(server))
     print(f"serving {args.database} on http://{args.host}:{args.port}", flush=True)
     httpd.serve_forever()
     return 0

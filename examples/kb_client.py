@@ -114,3 +114,114 @@ class KnowledgeClient:
 
     def job(self, job_id: str) -> dict:
         return self._request("GET", f"/api/parse/{job_id}")
+
+    def work_types(self) -> dict:
+        return self._request("GET", "/api/work_types")
+
+    def work_profile(self, work: str) -> dict:
+        return self._request("GET", "/api/work_profile", params={"work": work})
+
+    def set_work_profile(self, work: str, **fields: Any) -> dict:
+        return self._request(
+            "POST", "/api/work_profile", write=True,
+            json={"work": work, **fields},
+        )
+
+    def story_records(
+        self, work: str, *, category: str | None = None,
+        at_chapter: int | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work}
+        if category:
+            params["category"] = category
+        if at_chapter is not None:
+            params["at_chapter"] = at_chapter
+        return self._request("GET", "/api/story_record", params=params)
+
+    def compile_archive(
+        self, work: str, chapter_index: int, outline: str = "",
+        *, allow_future: bool = False,
+    ) -> dict:
+        return self._request(
+            "POST", "/api/compile_archive", write=True,
+            json={
+                "work": work, "chapter_index": chapter_index,
+                "outline": outline, "allow_future": allow_future,
+            },
+        )
+
+    def documents(
+        self, work: str, *, kind: str | None = None,
+        scope_key: str | None = None, version: int | None = None,
+        status: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work}
+        for key, value in (
+            ("kind", kind), ("scope_key", scope_key),
+            ("version", version), ("status", status),
+        ):
+            if value is not None:
+                params[key] = value
+        return self._request("GET", "/api/documents", params=params)
+
+    def save_document(self, work: str, payload: dict) -> dict:
+        return self._request(
+            "POST", "/api/documents", write=True,
+            json={"work": work, **payload},
+        )
+
+    def review_document(
+        self, work: str, *, kind: str, scope_key: str, version: int,
+        action: str, base_version: int | None = None,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "work": work, "kind": kind, "scope_key": scope_key,
+            "version": version, "action": action,
+        }
+        if base_version is not None:
+            payload["base_version"] = base_version
+        return self._request(
+            "POST", "/api/documents/review", write=True, json=payload,
+        )
+
+    def reproject_document(
+        self, work: str, *, kind: str, scope_key: str, version: int,
+    ) -> dict:
+        return self._request(
+            "POST", "/api/documents/reproject", write=True,
+            json={
+                "work": work, "kind": kind,
+                "scope_key": scope_key, "version": version,
+            },
+        )
+
+    def search_documents(
+        self, work: str, query: str, *, kind: str | None = None,
+        limit: int = 10,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work, "q": query, "limit": limit}
+        if kind:
+            params["kind"] = kind
+        return self._request("GET", "/api/documents/search", params=params)
+
+    def context(
+        self, work: str, *, chapter: int | None = None,
+        max_chars: int = 60_000,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work, "max_chars": max_chars}
+        if chapter is not None:
+            params["chapter"] = chapter
+        return self._request("GET", "/api/context", params=params)
+
+    def audit_draft(
+        self, work: str, text: str, *, chapter: int | None = None,
+        llm: bool = False,
+    ) -> dict:
+        payload: dict[str, Any] = {
+            "work": work, "text": text, "llm": llm,
+        }
+        if chapter is not None:
+            payload["chapter_index"] = chapter
+        return self._request(
+            "POST", "/api/audit", write=True, json=payload,
+        )

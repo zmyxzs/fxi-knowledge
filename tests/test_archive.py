@@ -515,7 +515,7 @@ def test_structured_audit_flags_missing_resource_change(tmp_path) -> None:
     db.close()
 
 
-def test_structured_audit_allows_debt_when_enabled(tmp_path) -> None:
+def test_structured_audit_requires_debt_change(tmp_path) -> None:
     db = _db(tmp_path)
     archive.set_work_profile(
         db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
@@ -535,13 +535,49 @@ def test_structured_audit_allows_debt_when_enabled(tmp_path) -> None:
         db, "w1", "杨凌欠了两块灵石。", chapter_index=1,
         changes=[change], skip_ledger_scan=True,
     )
-    assert report["passed"] is True
-    archive.set_work_profile(db, "w1", allow_debt=False)
+    assert report["passed"] is False
+    debt = {
+        "entity": "杨凌", "kind": "debt", "creditor": "赵洵",
+        "direction": "increase", "amount": 2, "evidence": "欠了两块灵石",
+    }
     report = archive.audit_draft(
         db, "w1", "杨凌欠了两块灵石。", chapter_index=1,
+        changes=[change, debt], skip_ledger_scan=True,
+    )
+    assert report["passed"] is True
+    db.close()
+
+
+def test_structured_audit_uses_change_entity_ledger(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1", protagonist_name="杨凌", resource_units=["灵石"],
+    )
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.upsert_entity(db, "w1", "赵洵")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1, dynamic_state={"resources": {"灵石": 10}},
+    )
+    archive.write_snapshot(
+        db, "w1", "赵洵", 1, dynamic_state={"resources": {"灵石": 100}},
+    )
+    change = {
+        "entity": "赵洵", "kind": "resource", "field": "灵石",
+        "direction": "decrease", "amount": 50,
+        "evidence": "赵洵花了五十块灵石",
+    }
+    report = archive.audit_draft(
+        db, "w1", "赵洵花了五十块灵石。", chapter_index=1,
+        changes=[change], skip_ledger_scan=True,
+    )
+    assert report["passed"] is True
+    change["amount"] = 120
+    report = archive.audit_draft(
+        db, "w1", "赵洵花了五十块灵石。", chapter_index=1,
         changes=[change], skip_ledger_scan=True,
     )
     assert report["passed"] is False
+    assert report["violations"][0]["entity"] == "赵洵"
     db.close()
 
 
@@ -588,6 +624,492 @@ def test_structured_audit_flags_item_shortage(tmp_path) -> None:
     )
     assert report["passed"] is False
     assert report["violations"][0]["type"] == "ITEM_ERROR"
+    db.close()
+
+
+def test_compile_as_of_excludes_future_death_and_location(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", protagonist_name="杨凌")
+    archive.upsert_entity(db, "w1", "杨凌")
+    archive.upsert_entity(db, "w1", "赵洵")
+    archive.write_snapshot(
+        db, "w1", "杨凌", 1,
+        dynamic_state={"current_location": "山门"},
+        cognition={"relations": [{"target": "赵洵", "surface_relation": "师徒"}]},
+    )
+    archive.write_snapshot(
+        db, "w1", "赵洵", 5,
+        lifecycle_status="dead",
+        dynamic_state={"current_location": "战场"},
+    )
+    archive.set_source_meta(db, "s1", "w1", chapter_index=1, content_raw="第1章")
+    early = archive.compile_archive(db, "w1", 1, "杨凌")["compiled_archive_markdown"]
+    assert "赵洵" in early
+    assert "山门" in early
+    assert "战场" not in early
+    late = archive.compile_archive(
+        db, "w1", 5, "杨凌", allow_future=True,
+    )["compiled_archive_markdown"]
+    assert "赵洵" not in late
+    db.close()
+
+
+def test_compile_rejects_distant_future_chapter(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1")
+    archive.set_source_meta(db, "s1", "w1", chapter_index=1, content_raw="第1章")
+    with pytest.raises(ValueError):
+        archive.compile_archive(db, "w1", 99, "")
+    result = archive.compile_archive(db, "w1", 99, "", allow_future=True)
+    assert result["chapter_index"] == 99
+    db.close()
+
+
+def test_profile_defaults_are_shared() -> None:
+    from fxi_novel.knowledge import profile_defaults
+
+    assert archive.DEFAULT_ARCHIVE_MODULES is profile_defaults.DEFAULT_ARCHIVE_MODULES
+    assert archive_extraction.DEFAULT_ENTITY_TYPES is profile_defaults.DEFAULT_ENTITY_TYPES
+    assert (
+        archive_extraction.DEFAULT_STORY_CATEGORIES
+        is profile_defaults.DEFAULT_STORY_CATEGORIES
+    )
+
+
+CHAPTER_MEMORY_TEXT = (
+    "杨凌走进山门。赵洵收他为徒。杨凌得到一柄灵剑。"
+)
+
+
+def _chapter_memory_output() -> dict:
+    return {
+        "chapter_index": 1,
+        "scenes": [
+            {
+                "name": "入山",
+                "causal_paragraph": (
+                    "杨凌走进山门，想拜入青云山，却被守门弟子拦下盘问；"
+                    "他说明来意并出示信物，守门弟子确认后放行，杨凌由此进入外门。"
+                ),
+                "participants": ["杨凌"],
+                "evidence": "杨凌走进山门",
+            },
+            {
+                "name": "拜师",
+                "causal_paragraph": (
+                    "赵洵见杨凌根骨尚可，决定收他为徒；杨凌跪下叩首，"
+                    "从此获得青云山弟子身份，也承担起师门任务。"
+                ),
+                "participants": ["杨凌", "赵洵"],
+                "evidence": "赵洵收他为徒",
+            },
+            {
+                "name": "得剑",
+                "causal_paragraph": (
+                    "赵洵赐给杨凌一柄灵剑，杨凌接过灵剑后获得第一件正式法器，"
+                    "但剑身有裂痕，后续需要修补。"
+                ),
+                "participants": ["杨凌", "赵洵"],
+                "evidence": "杨凌得到一柄灵剑",
+            },
+        ],
+        "cognition": [{
+            "holder": "杨凌",
+            "type": "judgment",
+            "content": "赵洵收徒是真心看重自己",
+            "audience": ["杨凌"],
+            "evidence": "赵洵收他为徒",
+        }],
+        "state_deltas": [{
+            "entity": "杨凌",
+            "category": "item",
+            "item": "灵剑",
+            "direction": "add",
+            "quantity": 1,
+            "evidence": "杨凌得到一柄灵剑",
+        }],
+        "unresolved": [{
+            "thread": "入门",
+            "transition": "new",
+            "next_condition": "完成外门任务",
+            "evidence": "赵洵收他为徒",
+        }],
+        "snapshot": {},
+    }
+
+
+def _storyline_network_output() -> dict:
+    sections = "\n".join(
+        f"# {title}\n- 内容" for title in archive_extraction.STORYLINE_SECTIONS
+    )
+    exits = "\n".join(f"- {name}：内容" for name in archive_extraction.STORYLINE_EXITS)
+    return {
+        "network": sections + "\n# 七、功能出口快照\n" + exits,
+        "assumptions": ["假设A：下一批验证"],
+        "notes": "样本完整",
+    }
+
+
+def test_storyline_network_validation_and_versions(tmp_path) -> None:
+    db = _db(tmp_path)
+    first = archive_extraction.apply_storyline_network(
+        db, "w1", _storyline_network_output(),
+        scope_key="batch:1-3", source_chapters=[1, 2, 3],
+    )
+    assert first["valid"] is True
+    assert first["document"]["status"] == "active"
+    assert first["document"]["kind"] == "storyline_network"
+    second = archive_extraction.apply_storyline_network(
+        db, "w1", _storyline_network_output(),
+        scope_key="batch:1-3", source_chapters=[1, 2, 3],
+        round_number=2, base_scope_key="batch:1-3",
+        previous_network=first["document"]["content"]["network"],
+    )
+    assert second["document"]["version"] == 2
+    old = archive.get_document(
+        db, "w1", "storyline_network", "batch:1-3", version=1,
+    )
+    assert old["status"] == "superseded"
+    invalid = _storyline_network_output()
+    invalid["network"] += "\n第3章出现"
+    result = archive_extraction.apply_storyline_network(
+        db, "w1", invalid, scope_key="batch:4-6", source_chapters=[4, 5, 6],
+    )
+    assert result["valid"] is False
+    assert result["document"]["status"] == "draft"
+    assert any("章节号" in issue for issue in result["issues"])
+    db.close()
+
+
+def _archive_update_output() -> dict:
+    archive_text = "\n".join(
+        f"# {title}\n- 内容" for title in archive_extraction.ARCHIVE_MODULE_TITLES
+    )
+    return {
+        "draft": "## 第一阶段\n流转\n## 第二阶段\n增量\n## 第三阶段\n校验",
+        "archive": archive_text,
+    }
+
+
+def test_archive_update_versions_and_validation(tmp_path) -> None:
+    db = _db(tmp_path)
+    first = archive_extraction.apply_archive_update(
+        db, "w1", _archive_update_output(),
+        source_chapters=[1], previous_archive="（无原档案）",
+    )
+    assert first["valid"] is True
+    assert first["document"]["version"] == 1
+    assert first["document"]["status"] == "active"
+    second = archive_extraction.apply_archive_update(
+        db, "w1", _archive_update_output(),
+        source_chapters=[2], previous_archive=first["document"]["content"]["archive"],
+    )
+    assert second["document"]["version"] == 2
+    old = archive.get_document(
+        db, "w1", "long_term_archive", "main", version=1,
+    )
+    assert old["status"] == "superseded"
+    invalid = _archive_update_output()
+    invalid["archive"] = "# 一、题材与元规则\n- 只有一栏"
+    result = archive_extraction.apply_archive_update(
+        db, "w1", invalid, source_chapters=[3],
+    )
+    assert result["valid"] is False
+    assert result["document"]["status"] == "draft"
+    assert any("缺少模块" in issue for issue in result["issues"])
+    db.close()
+
+
+def test_chapter_memory_validation_and_document(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, _chapter_memory_output(),
+        text=CHAPTER_MEMORY_TEXT, model="test-model",
+    )
+    assert result["valid"] is True
+    assert result["document"]["status"] == "active"
+    assert result["document"]["kind"] == "chapter_memory"
+    assert result["document"]["scope_key"] == "chapter:1"
+    assert "认知与信息差" in result["document"]["content_markdown"]
+    assert result["document"]["prompt_name"] == "chapter-memory"
+    assert result["projection"]["scene"] == 3
+    assert len(archive.list_story_records(db, "w1", category="scene")) == 3
+    assert len(archive.list_story_records(db, "w1", category="cognition")) == 1
+    assert len(archive.list_story_records(db, "w1", category="thread")) == 1
+    snapshot = archive.get_snapshot(db, "w1", "杨凌", at_chapter=1)
+    assert snapshot["dynamic_state"]["inventory"]["灵剑"] == 1
+    archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, _chapter_memory_output(), text=CHAPTER_MEMORY_TEXT,
+    )
+    assert len(archive.list_story_records(db, "w1", category="scene")) == 3
+    db.close()
+
+
+def test_compile_renders_chapter_memory_module(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(
+        db, "w1",
+        archive_modules=[{"title": "章节记忆", "kind": "chapter_memory"}],
+    )
+    archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, _chapter_memory_output(), text=CHAPTER_MEMORY_TEXT,
+    )
+    markdown = archive.compile_archive(db, "w1", 1, "")["compiled_archive_markdown"]
+    assert "### 章节记忆" in markdown
+    assert "山门盘问" not in markdown
+    assert "入山" in markdown
+    assert "判断·杨凌" in markdown
+    db.close()
+
+
+def test_chapter_memory_soft_accepts_partial_output(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = _chapter_memory_output()
+    output["scenes"] = output["scenes"][:1]
+    output["scenes"][0]["evidence"] = "正文没有这句话"
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, output, text=CHAPTER_MEMORY_TEXT,
+    )
+    assert result["valid"] is True
+    assert result["document"]["status"] == "active"
+    assert any("scenes 数量" in warning for warning in result["warnings"])
+    assert any("evidence" in warning for warning in result["warnings"])
+    db.close()
+
+
+def test_chapter_memory_normalizes_aliases(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = {
+        "场景": [{
+            "title": "入山",
+            "summary": "杨凌走进山门，被守门弟子拦下盘问，他出示信物后获准进入。",
+            "参与人": ["杨凌"],
+            "原文": "杨凌走进山门",
+        }],
+        "认知": [{
+            "type": "判断",
+            "人物": "杨凌",
+            "受众": [],
+            "原文": "赵洵收他为徒",
+        }],
+        "状态变化": [{
+            "category": "道具",
+            "entity": "杨凌",
+            "item": "灵剑",
+            "quantity": 1,
+            "原文": "杨凌得到一柄灵剑",
+        }],
+        "未决": [{
+            "thread": "灵剑裂痕",
+            "transition": "新",
+            "next_condition": "找到修补灵剑的方法",
+            "原文": "杨凌得到一柄灵剑",
+        }],
+    }
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, output, text=CHAPTER_MEMORY_TEXT,
+    )
+    assert result["valid"] is True
+    content = result["document"]["content"]
+    assert content["cognition"][0]["type"] == "judgment"
+    assert content["state_deltas"][0]["category"] == "item"
+    assert content["unresolved"][0]["transition"] == "new"
+    assert result["warnings"]
+    db.close()
+
+
+def test_chapter_memory_rejects_empty_scenes(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, {"scenes": []}, text=CHAPTER_MEMORY_TEXT,
+    )
+    assert result["valid"] is False
+    assert result["document"]["status"] == "draft"
+    assert "scenes 为空" in result["issues"]
+    db.close()
+
+
+def test_document_review_accept_reject_and_conflict(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"v": 1},
+    )
+    active = archive.review_document(
+        db, "w1", "chapter_memory", "chapter:1", 1, "accept",
+        base_version=0,
+    )
+    assert active["status"] == "active"
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"v": 2},
+    )
+    with pytest.raises(archive.DocumentConflictError):
+        archive.review_document(
+            db, "w1", "chapter_memory", "chapter:1", 2, "accept",
+            base_version=0,
+        )
+    updated = archive.review_document(
+        db, "w1", "chapter_memory", "chapter:1", 2, "accept",
+        base_version=1,
+    )
+    assert updated["status"] == "active"
+    assert archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", version=1,
+    )["status"] == "superseded"
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"v": 3},
+    )
+    rejected = archive.review_document(
+        db, "w1", "chapter_memory", "chapter:1", 3, "reject",
+    )
+    assert rejected["status"] == "rejected"
+    db.close()
+
+
+def test_rollback_supersedes_later_documents(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1", {"v": 1}, status="active",
+    )
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:3", {"v": 3}, status="active",
+    )
+    archive.save_document(
+        db, "w1", "long_term_archive", "main", {"archive": "x"},
+        status="active",
+    )
+    archive.save_document(
+        db, "w1", "storyline_network", "batch:1-5", {"network": "y"},
+        status="active",
+    )
+    result = archive.rollback_after_chapter(db, "w1", 2)
+    assert result["superseded_documents"] >= 3
+    assert archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", version=1,
+    )["status"] == "active"
+    assert archive.get_document(
+        db, "w1", "chapter_memory", "chapter:3", version=1,
+    )["status"] == "superseded"
+    assert archive.get_document(
+        db, "w1", "long_term_archive", "main", version=1,
+    )["status"] == "superseded"
+    db.close()
+
+
+def test_projection_status_and_reproject(tmp_path) -> None:
+    db = _db(tmp_path)
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, _chapter_memory_output(), text=CHAPTER_MEMORY_TEXT,
+    )
+    assert result["document"]["projection_status"] == "done"
+    with db.transaction() as connection:
+        connection.execute(
+            "DELETE FROM kb_story_record WHERE work_id='w1' AND category='scene'"
+        )
+    assert archive.list_story_records(db, "w1", category="scene") == []
+    reprojected = archive.reproject_document(
+        db, "w1", "chapter_memory", "chapter:1", 1,
+    )
+    assert reprojected["projection"]["scene"] == 3
+    assert len(archive.list_story_records(db, "w1", category="scene")) == 3
+    assert reprojected["document"]["projection_status"] == "done"
+    db.close()
+
+
+def test_rollback_keeps_artifacts_before_edited_chapter(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "long_term_archive", "main", {"archive": "x"},
+        status="active", source_chapters=[1],
+    )
+    archive.save_document(
+        db, "w1", "storyline_network", "batch:1-1", {"network": "y"},
+        status="active", source_chapters=[1],
+    )
+    archive.rollback_after_chapter(db, "w1", 2)
+    assert archive.get_document(
+        db, "w1", "long_term_archive", "main", version=1,
+    )["status"] == "active"
+    assert archive.get_document(
+        db, "w1", "storyline_network", "batch:1-1", version=1,
+    )["status"] == "active"
+    db.close()
+
+
+def test_document_fts_search_and_status_filter(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"text": "杨凌得到一柄灵剑"},
+        markdown="杨凌得到一柄灵剑，剑身有裂痕。",
+        status="active", source_chapters=[1],
+    )
+    archive.save_document(
+        db, "w1", "long_term_archive", "main",
+        {"text": "赵洵收杨凌为徒"},
+        markdown="赵洵收杨凌为徒。",
+        status="draft", source_chapters=[1],
+    )
+    hits = archive.search_documents(db, "w1", "灵剑")
+    assert len(hits) == 1
+    assert hits[0]["kind"] == "chapter_memory"
+    assert archive.search_documents(db, "w1", "赵洵") == []
+    drafts = archive.list_documents(db, "w1", status="draft")
+    assert len(drafts) == 1
+    assert drafts[0]["kind"] == "long_term_archive"
+    archive.purge_work(db, "w1")
+    assert archive.search_documents(db, "w1", "灵剑") == []
+    db.close()
+
+
+def test_document_versions_and_active_supersede(tmp_path) -> None:
+    db = _db(tmp_path)
+    first = archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"scenes": [{"name": "入门"}]},
+        markdown="- 入门", source_chapters=[1],
+    )
+    assert first["version"] == 1
+    second = archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"scenes": [{"name": "入门", "revised": True}]},
+        status="active", source_chapters=[1],
+    )
+    third = archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"scenes": [{"name": "入门", "revised": 2}]},
+        status="active", source_chapters=[1],
+    )
+    assert second["version"] == 2
+    assert third["version"] == 3
+    active = archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", status="active",
+    )
+    assert active["version"] == 3
+    old = archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", version=1,
+    )
+    assert old["content"]["scenes"][0]["name"] == "入门"
+    visible = archive.list_documents(db, "w1", kind="chapter_memory")
+    assert [item["version"] for item in visible] == [3]
+    all_versions = archive.list_documents(
+        db, "w1", kind="chapter_memory", include_superseded=True,
+    )
+    assert len(all_versions) == 3
+    archive.purge_work(db, "w1")
+    assert archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", version=1,
+    ) is None
+    db.close()
+
+
+def test_story_record_scope_indexes_exist(tmp_path) -> None:
+    db = _db(tmp_path)
+    with db.connection() as connection:
+        indexes = {
+            row[1] for row in connection.execute("PRAGMA index_list(kb_story_record)")
+        }
+    assert "ix_kb_story_record_work_chapter" in indexes
+    assert "ix_kb_story_record_scope" in indexes
     db.close()
 
 
