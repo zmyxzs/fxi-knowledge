@@ -264,11 +264,12 @@ class KnowledgeServer:
             1, min(4, int(os.environ.get("FXI_KB_PARSE_CONCURRENCY", "1")))
         )
         # Chapter memory is one independent model call per chapter, so it can
-        # run concurrently while the SQLite writes stay sequential. The
-        # default is 2 because the gateway pool serves two concurrent accounts
-        # and answers 503 no_healthy_account from the third request on.
+        # run concurrently while the SQLite writes stay sequential. The cn
+        # realm serves 6+ concurrent requests without throttling (measured at
+        # 10); the global realm answers 503 no_healthy_account from the third
+        # request, so drop this to 2 when running against it.
         self.memory_concurrency = max(
-            1, min(8, int(os.environ.get("FXI_KB_MEMORY_CONCURRENCY", "2")))
+            1, min(16, int(os.environ.get("FXI_KB_MEMORY_CONCURRENCY", "6")))
         )
         self.memory_retries = max(
             0, min(5, int(os.environ.get("FXI_KB_MEMORY_RETRIES", "2")))
