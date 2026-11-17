@@ -1716,3 +1716,101 @@ def test_run_with_concurrency_isolates_failures() -> None:
     assert [item["output"] for item in results] == ["ok1", None, "ok2"]
     assert "ValueError" in results[1]["error"]
     assert results[1]["attempts"] == 1
+
+
+class _StubResponse:
+    def __init__(self, payload: dict) -> None:
+        self._payload = payload
+        self.status_code = 200
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return self._payload
+
+
+class _StubClient:
+    """Stand-in for httpx.AsyncClient that records the request body."""
+
+    last_request: dict = {}
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        return None
+
+    async def post(self, url, *, headers=None, json=None):
+        type(self).last_request = dict(json or {})
+        content = _STUB_CONTENT["chapter_memory"]
+        return _StubResponse({
+            "choices": [{"message": {"content": content}}],
+            "usage": {
+                "prompt_tokens": 2500,
+                "completion_tokens": 1800,
+                "total_tokens": 4300,
+                "completion_tokens_details": {"reasoning_tokens": 0},
+            },
+        })
+
+
+_STUB_CONTENT = {"chapter_memory": "{}"}
+
+
+def test_llm_request_options_disables_reasoning_budget_conflict() -> None:
+    assert archive_extraction.llm_request_options(
+        reasoning_effort="none", max_tokens=6000,
+    ) == {"reasoning_effort": "none", "max_tokens": 6000}
+    # max_tokens is dropped while reasoning runs: it would be spent on hidden tokens.
+    assert archive_extraction.llm_request_options(
+        reasoning_effort="low", max_tokens=6000,
+    ) == {"reasoning_effort": "low"}
+    assert archive_extraction.llm_request_options() == {}
+    with pytest.raises(ValueError):
+        archive_extraction.llm_request_options(reasoning_effort="max")
+
+
+def test_chapter_memory_request_sends_options_and_records_usage(
+    tmp_path, monkeypatch,
+) -> None:
+    _STUB_CONTENT["chapter_memory"] = json.dumps(
+        _chapter_memory_output(), ensure_ascii=False,
+    )
+    monkeypatch.setattr(
+        archive_extraction.httpx, "AsyncClient", _StubClient,
+    )
+    usage: dict = {}
+    output = asyncio.run(
+        archive_extraction.extract_chapter_memory_with_openai(
+            CHAPTER_MEMORY_TEXT, 1,
+            base_url="http://llm.invalid", api_key="k", model="m",
+            reasoning_effort="none", max_tokens=6000, usage=usage,
+        ),
+    )
+    assert output["scenes"]
+    sent = _StubClient.last_request
+    assert sent["reasoning_effort"] == "none"
+    assert sent["max_tokens"] == 6000
+    assert usage == {
+        "prompt_tokens": 2500, "completion_tokens": 1800,
+        "total_tokens": 4300, "reasoning_tokens": 0,
+    }
+
+
+def test_documents_persist_usage(tmp_path) -> None:
+    db = _db(tmp_path)
+    usage = {"prompt_tokens": 10, "completion_tokens": 20, "seconds": 1.5}
+    result = archive_extraction.apply_chapter_memory_output(
+        db, "w1", 1, _chapter_memory_output(),
+        text=CHAPTER_MEMORY_TEXT, usage=usage,
+    )
+    assert result["document"]["usage"] == usage
+    fetched = archive.get_document(
+        db, "w1", "chapter_memory", "chapter:1", status="active",
+    )
+    assert fetched["usage"] == usage
+    db.close()

@@ -17,6 +17,7 @@ import os
 import re
 import sys
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -269,6 +270,16 @@ class KnowledgeServer:
         )
         self.memory_retries = max(
             0, min(5, int(os.environ.get("FXI_KB_MEMORY_RETRIES", "2")))
+        )
+        # Reasoning tokens are billed as completion tokens and dominate wall
+        # time: "none" is ~3x faster on chapter_memory and ~10x on
+        # archive_update. Raise it when a run trades time for deeper recall.
+        self.llm_reasoning_effort = (
+            os.environ.get("FXI_KB_LLM_REASONING_EFFORT") or "none"
+        ).strip().lower()
+        raw_max_tokens = os.environ.get("FXI_KB_LLM_MAX_OUTPUT_TOKENS")
+        self.llm_max_tokens = (
+            int(raw_max_tokens) if raw_max_tokens not in (None, "") else None
         )
         self.jobs: dict[str, dict] = self._load_jobs()
         self.db = Database(database)
@@ -1669,21 +1680,29 @@ class KnowledgeServer:
                     previous_archive = "（无原长期档案，这是首次建档）"
             results = []
             for chapter in chapters:
+                usage: dict = {}
+                started = time.perf_counter()
                 output = await archive_extraction.extract_archive_update_with_openai(
                     previous_archive, [chapter],
                     work_title=row["title"],
                     base_url=self.llm_base_url,
                     api_key=self.llm_api_key,
                     model=self.llm_model,
+                    reasoning_effort=self.llm_reasoning_effort,
+                    max_tokens=self.llm_max_tokens,
+                    usage=usage,
                 )
+                usage["seconds"] = round(time.perf_counter() - started, 2)
                 result = archive_extraction.apply_archive_update(
                     self.db, row["id"], output,
                     source_chapters=[chapter["chapter_index"]],
                     previous_archive=previous_archive,
                     model=self.llm_model,
+                    usage=usage,
                 )
                 results.append({
                     "chapter_index": chapter["chapter_index"], **result,
+                    "usage": usage,
                 })
                 if not result.get("valid"):
                     break
@@ -1756,12 +1775,21 @@ class KnowledgeServer:
                 }
 
             async def extract(chapter: dict) -> dict:
-                return await archive_extraction.extract_chapter_memory_with_openai(
-                    chapter["text"], chapter["chapter_index"],
-                    base_url=self.llm_base_url,
-                    api_key=self.llm_api_key,
-                    model=self.llm_model,
-                )
+                usage: dict = {}
+                started = time.perf_counter()
+                try:
+                    output = await archive_extraction.extract_chapter_memory_with_openai(
+                        chapter["text"], chapter["chapter_index"],
+                        base_url=self.llm_base_url,
+                        api_key=self.llm_api_key,
+                        model=self.llm_model,
+                        reasoning_effort=self.llm_reasoning_effort,
+                        max_tokens=self.llm_max_tokens,
+                        usage=usage,
+                    )
+                finally:
+                    usage["seconds"] = round(time.perf_counter() - started, 2)
+                return {"output": output, "usage": usage}
 
             extractions = await archive_extraction.run_with_concurrency(
                 chapters, extract,
@@ -1778,13 +1806,15 @@ class KnowledgeServer:
                         "status": "failed", "error": extraction["error"],
                     })
                     continue
+                payload = extraction["output"]
                 try:
                     applied = archive_extraction.apply_chapter_memory_output(
-                        self.db, row["id"], chapter_index, extraction["output"],
+                        self.db, row["id"], chapter_index, payload["output"],
                         text=chapter["text"],
                         prompt_name="chapter-memory",
                         prompt_version="4",
                         model=self.llm_model,
+                        usage=payload["usage"],
                     )
                 except Exception as exc:  # noqa: BLE001 - keep the batch alive
                     results.append({
@@ -1797,6 +1827,7 @@ class KnowledgeServer:
                     **applied,
                     "status": "completed" if applied.get("valid") else "invalid",
                     "attempts": extraction["attempts"],
+                    "usage": payload["usage"],
                 })
             failed = [item for item in results if item["status"] == "failed"]
             if failed and len(failed) == len(results):

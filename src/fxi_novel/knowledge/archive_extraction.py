@@ -7,6 +7,7 @@ entity upserts, per-chapter snapshots and ledger arithmetic.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import unicodedata
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 import httpx
 
 from .profile_defaults import DEFAULT_ENTITY_TYPES, DEFAULT_STORY_CATEGORIES
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """你是小说档案抽取器。根据本章正文和已有实体表，输出本章结束时的状态变更。
 只输出 JSON，结构如下：
@@ -307,6 +310,54 @@ def _is_retryable(exc: BaseException) -> bool:
         status = exc.response.status_code
         return status == 429 or status >= 500
     return False
+
+
+REASONING_EFFORT_VALUES = {"none", "low", "medium", "high"}
+
+
+def llm_request_options(
+    *, reasoning_effort: str | None = None, max_tokens: int | None = None,
+) -> dict:
+    """Build the generation options that actually help on this provider.
+
+    Reasoning tokens are billed as completion tokens and dominate the wall
+    time, so ``reasoning_effort`` is the switch that matters. ``max_tokens``
+    is only safe when reasoning is off: with reasoning on, the budget can be
+    spent entirely on hidden tokens and the content comes back empty.
+    """
+    options: dict = {}
+    effort = str(reasoning_effort or "").strip().lower()
+    if effort:
+        if effort not in REASONING_EFFORT_VALUES:
+            raise ValueError(
+                f"reasoning_effort must be one of {sorted(REASONING_EFFORT_VALUES)}"
+            )
+        options["reasoning_effort"] = effort
+    if max_tokens:
+        if effort and effort != "none":
+            logger.warning(
+                "max_tokens ignored while reasoning_effort=%s: the budget would "
+                "be consumed by reasoning tokens", effort,
+            )
+        else:
+            options["max_tokens"] = int(max_tokens)
+    return options
+
+
+def _usage_from(body: dict) -> dict:
+    usage = body.get("usage") or {}
+    details = usage.get("completion_tokens_details") or {}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "completion_tokens": usage.get("completion_tokens"),
+        "total_tokens": usage.get("total_tokens"),
+        "reasoning_tokens": details.get("reasoning_tokens"),
+    }
+
+
+def _record_usage(body: dict, usage: dict | None) -> None:
+    if usage is not None:
+        usage.update(_usage_from(body))
 
 
 async def run_with_concurrency(
@@ -1157,6 +1208,7 @@ def apply_chapter_memory_output(
     db: Any, work_id: str, chapter_index: int, output: dict, *,
     text: str, prompt_name: str = "chapter-memory",
     prompt_version: str = "4", model: str | None = None,
+    usage: dict | None = None,
 ) -> dict:
     from . import archive
 
@@ -1175,6 +1227,7 @@ def apply_chapter_memory_output(
         schema_version=1,
         projection_status="pending" if not issues else "not_applicable",
         warnings=warnings,
+        usage=usage,
     )
     projection = {"scene": 0, "cognition": 0, "thread": 0, "state_delta": 0}
     projection_error = None
@@ -1216,6 +1269,9 @@ async def extract_chapter_memory_with_openai(
     api_key: str,
     model: str,
     timeout: float = 180.0,
+    reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
+    usage: dict | None = None,
 ) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     messages = [
@@ -1225,19 +1281,25 @@ async def extract_chapter_memory_with_openai(
             ensure_ascii=False,
         )},
     ]
+    options = {
+        "model": model,
+        "messages": _merge_system(messages),
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        **llm_request_options(
+            reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+        ),
+    }
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": model,
-                "messages": _merge_system(messages),
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
+            json=options,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        body = response.json()
+        _record_usage(body, usage)
+        content = body["choices"][0]["message"]["content"]
     return parse_chapter_memory_output(content)
 ARCHIVE_UPDATE_MAX_CHAPTER_CHARS = 20_000
 ARCHIVE_UPDATE_MAX_PREVIOUS_CHARS = 60_000
@@ -1380,6 +1442,7 @@ def apply_archive_update(
     source_chapters: list[int], previous_archive: str = "",
     prompt_name: str = "archive-update",
     prompt_version: str = "2", model: str | None = None,
+    usage: dict | None = None,
 ) -> dict:
     from . import archive
 
@@ -1420,6 +1483,7 @@ def apply_archive_update(
         model=model,
         schema_version=1,
         warnings=warnings,
+        usage=usage,
     )
     return {
         "valid": not issues,
@@ -1439,6 +1503,9 @@ async def extract_archive_update_with_openai(
     api_key: str,
     model: str,
     timeout: float = 300.0,
+    reasoning_effort: str | None = None,
+    max_tokens: int | None = None,
+    usage: dict | None = None,
 ) -> dict:
     url = base_url.rstrip("/") + "/chat/completions"
     payload = {
@@ -1457,19 +1524,25 @@ async def extract_archive_update_with_openai(
         {"role": "system", "content": _archive_update_prompt()},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
     ]
+    options = {
+        "model": model,
+        "messages": _merge_system(messages),
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+        **llm_request_options(
+            reasoning_effort=reasoning_effort, max_tokens=max_tokens,
+        ),
+    }
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(
             url,
             headers={"Authorization": f"Bearer {api_key}"},
-            json={
-                "model": model,
-                "messages": _merge_system(messages),
-                "temperature": 0,
-                "response_format": {"type": "json_object"},
-            },
+            json=options,
         )
         response.raise_for_status()
-        content = response.json()["choices"][0]["message"]["content"]
+        body = response.json()
+        _record_usage(body, usage)
+        content = body["choices"][0]["message"]["content"]
     return parse_archive_update_output(content)
 STORYLINE_SECTIONS = (
     "一、拆解定位",

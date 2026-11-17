@@ -580,9 +580,15 @@ FXI_KB_LLM_MODEL=global:deepseek-v4.1-flash
 FXI_KB_PARSE_CONCURRENCY=1
 FXI_KB_MEMORY_CONCURRENCY=4
 FXI_KB_MEMORY_RETRIES=2
+FXI_KB_LLM_REASONING_EFFORT=none
+# FXI_KB_LLM_MAX_OUTPUT_TOKENS=8000
 ```
 
 `FXI_KB_MEMORY_CONCURRENCY` 只影响 `chapter_memory` 的模型调用并发（1–8，默认 4），数据库写入仍按章节顺序串行；`FXI_KB_MEMORY_RETRIES` 是单章传输层失败（429/5xx/超时）的重试次数（0–5，默认 2），退避 1s、2s。
+
+`FXI_KB_LLM_REASONING_EFFORT`（`none` / `low` / `medium` / `high`，默认 `none`）是**耗时最大的开关**：实测推理 token 占完成 token 的 77–81%，关掉后同章同 prompt 快 3–10 倍（见 `kb-optimization-plan.md` §22）。给 `FXI_KB_LLM_MAX_OUTPUT_TOKENS` 设上限时注意：推理开着的时候上限会被推理 token 吃光导致正文为空，所以代码在 `reasoning_effort≠none` 时会忽略这个上限。
+
+每次模型调用的 token 用量与耗时写进 `kb_document.usage_json`（`get_document` 返回 `usage` 字段），可用 `/api/documents` 逐章核对成本。
 
 ### 6.3 常用命令
 

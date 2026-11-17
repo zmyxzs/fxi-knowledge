@@ -1143,3 +1143,79 @@ dedupe 改为按行归档
 
 
 
+
+---
+
+## 22. 推理 token 与单章成本（2026-11-17 实测）
+
+### 22.1 方法
+
+同库、同章、同 prompt，只改请求参数，串行各跑一次：
+
+```text
+模型：global:deepseek-v4.1-flash
+章节：十日终焉 ch001（2551 字）、ch002（2505 字）
+基线：原代码（不传 reasoning_effort、不传 max_tokens）
+```
+
+### 22.2 结论：推理 token 占完成 token 的 77–81%
+
+```text
+chapter_memory 基线   34–47s   完成 6401–7948 tok，其中推理 4927（77%）
+archive_update 基线  108s      完成 21490 tok，其中推理 17508（81%）
+archive_update low    69s      完成 13772 tok，其中推理 9149（66%）
+```
+
+### 22.3 关掉推理后的单章耗时
+
+```text
+                  基线         reasoning_effort=none
+chapter_memory    46.7s  ->    10.3s      4.5×
+archive_update    84.7s  ->    18.4s      4.6×
+单章合计         131.4s  ->    28.7s      4.6×
+```
+
+第 2 章（已有档案，基线 144.6s）→ **25.0s**，5.8×。
+两章合计 276.0s → **53.7s**。
+
+token 侧同向下降：
+
+```text
+chapter_memory   7948 -> 1752 tok
+archive_update  14817 -> 3664 tok（第2章 20770 -> 3678 tok）
+```
+
+### 22.4 质量侧观察
+
+```text
+chapter_memory 条目数基本持平（场景 4–5、state_delta 4、认知 5–7、未决 5–7）
+archive_update changes 12 条，与基线 8–13 同量级
+archive markdown 2517 字符（基线 3229），偏薄
+```
+
+即：**关掉推理主要省的是隐藏 token，不是可见产出**；但整本档案重写的细节会变薄，这正是把档案改成派生的理由（见 §21.3）。
+
+### 22.5 max_tokens 的坑
+
+```text
+reasoning_effort 未关 + max_tokens=6000
+  -> finish_reason=length，6000 tok 全是推理，正文 0 字符，JSON 解析失败
+```
+
+代码里已加保护：`reasoning_effort≠none` 时忽略 `max_tokens` 并记 warning。
+
+### 22.6 已落地
+
+```text
+FXI_KB_LLM_REASONING_EFFORT   默认 none，可改 low/medium/high
+FXI_KB_LLM_MAX_OUTPUT_TOKENS  可选，仅在推理关闭时生效
+kb_document.usage_json        每章 token 用量 + 秒数，get_document 返回 usage
+```
+
+### 22.7 下一步与未验证
+
+```text
+未做 10 章 A/B：none vs low 的叙事召回差异需要人工抽检
+50 章推算（none + 并发 4）：约 16–20 分钟；仍待整轮实测
+整本档案 markdown 仍每章重写，是下一刀（Phase C/D）
+```

@@ -228,6 +228,10 @@ def ensure_schema(db: Any) -> None:
             connection.execute(
                 "ALTER TABLE kb_document ADD COLUMN warnings_json TEXT"
             )
+        if "usage_json" not in document_columns:
+            connection.execute(
+                "ALTER TABLE kb_document ADD COLUMN usage_json TEXT"
+            )
     try:
         with db.transaction() as connection:
             connection.execute(
@@ -1818,6 +1822,7 @@ def save_document(
     projection_status: str = "not_applicable",
     projection_error: str | None = None,
     warnings: list[str] | None = None,
+    usage: dict | None = None,
 ) -> dict:
     """Store a versioned document artifact (chapter memory, archive, line network)."""
     kind = kind.strip()
@@ -1850,8 +1855,9 @@ def save_document(
                 id, work_id, kind, scope_key, version, status,
                 content_json, content_markdown, source_chapters_json,
                 prompt_name, prompt_version, model, schema_version,
-                projection_status, projection_error, warnings_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                projection_status, projection_error, warnings_json,
+                usage_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 document_id, work_id, kind, scope_key, version, status,
@@ -1859,7 +1865,8 @@ def save_document(
                 json.dumps(source_chapters or [], ensure_ascii=False),
                 prompt_name, prompt_version, model, int(schema_version),
                 projection_status, projection_error,
-                json.dumps(warnings or [], ensure_ascii=False), _now(),
+                json.dumps(warnings or [], ensure_ascii=False),
+                json.dumps(usage, ensure_ascii=False) if usage else None, _now(),
             ),
         )
         _index_document(
@@ -2062,6 +2069,7 @@ def _document_row(row: Any) -> dict:
         item.pop("source_chapters_json", "[]") or "[]"
     )
     item["warnings"] = json.loads(item.pop("warnings_json", "[]") or "[]")
+    item["usage"] = json.loads(item.pop("usage_json", "null") or "null")
     return item
 
 
