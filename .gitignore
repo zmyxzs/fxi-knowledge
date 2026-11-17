@@ -10,3 +10,4 @@ build/
 .pytest-run.log
 tests/fixtures/chapter_memory_golden_real.jsonl
 tests/fixtures/chapter_memory_golden_blind.jsonl
+.tmpbench/
