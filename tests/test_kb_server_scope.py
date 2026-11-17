@@ -126,6 +126,105 @@ def test_document_review_endpoint_and_update_rollback(tmp_path) -> None:
     assert document["status"] == "superseded"
 
 
+def test_entity_returns_canonical_entries(tmp_path) -> None:
+    server = _server(tmp_path)
+    server.create_work("作品")
+    server.apply_canonical("作品", {
+        "chapter_index": 1,
+        "changes": [{
+            "entry_key": "五:唐三:境界", "module": "五",
+            "info_type": "dynamic", "subject": "唐三",
+            "predicate": "境界", "value": "第一重",
+        }],
+    })
+    result = server.entity("唐三", "作品")
+    assert result["archive"] is False
+    assert result["total"] == 1
+    assert result["canonical"][0]["entry_key"] == "五:唐三:境界"
+
+
+def test_story_filters_by_subject_and_module(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    for subject, module in (("唐三", "五"), ("小舞", "四")):
+        archive.apply_archive_changes(server.db, work["id"], 1, [{
+            "entry_key": f"{module}:{subject}:状态", "module": module,
+            "info_type": "dynamic", "subject": subject,
+            "predicate": "状态", "value": "正常",
+        }])
+    archive.set_work_profile(server.db, work["id"], read_layer="canonical")
+    result = server.story("作品", None, 20, subject="唐三")
+    assert result["total"] == 1
+    assert result["items"][0]["subject"] == "唐三"
+    result = server.story("作品", None, 20, module="四")
+    assert result["total"] == 1
+    assert result["items"][0]["subject"] == "小舞"
+
+
+def test_story_uses_profile_read_layer(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    archive.add_story_record(
+        server.db, work["id"], "fact",
+        {"entity": "唐三", "field": "年龄", "value": "六岁"},
+        chapter_index=1,
+    )
+    archive.apply_archive_changes(server.db, work["id"], 1, [{
+        "entry_key": "五:唐三:境界", "module": "五",
+        "info_type": "dynamic", "subject": "唐三",
+        "predicate": "境界", "value": "第一重",
+    }])
+    archive.set_work_profile(server.db, work["id"], read_layer="canonical")
+    result = server.story("作品", None, 20)
+    assert result["total"] == 1
+    assert result["items"][0]["predicate"] == "境界"
+
+
+def test_documents_pagination(tmp_path) -> None:
+    server = _server(tmp_path)
+    server.create_work("作品")
+    for index in range(3):
+        server.save_document("作品", {
+            "kind": "chapter_memory", "scope_key": f"chapter:{index + 1}",
+            "content": {"scenes": []}, "status": "active",
+        })
+    first = server.documents("作品", None, None, None, None, 2, 0)
+    assert first["total"] == 3
+    assert len(first["documents"]) == 2
+    assert first["next_offset"] == 2
+    second = server.documents("作品", None, None, None, None, 2, 2)
+    assert len(second["documents"]) == 1
+    assert second["next_offset"] is None
+
+
+def test_canonical_apply_and_list(tmp_path) -> None:
+    server = _server(tmp_path)
+    server.create_work("作品")
+    result = server.apply_canonical("作品", {
+        "chapter_index": 1,
+        "changes": [{
+            "entry_key": "character:唐三:境界",
+            "module": "五",
+            "info_type": "dynamic",
+            "op": "upsert",
+            "subject": "唐三",
+            "predicate": "境界",
+            "value": "第一重",
+        }],
+    })
+    assert result["applied"] == 1
+    data = server.canonical("作品", None, None, 20, 0)
+    assert data["total"] == 1
+    assert data["records"][0]["entry_key"] == "character:唐三:境界"
+    assert data["records"][0]["layer"] == "canonical"
+
+
 def test_story_hides_failed_projection_records(tmp_path) -> None:
     from fxi_novel.knowledge import archive
 
@@ -226,6 +325,24 @@ def test_story_prefers_archive_records(tmp_path) -> None:
     assert result["total"] == 1
     assert result["items"][0]["subject"] == "唐三"
     assert result["items"][0]["value"] == "六岁"
+
+
+def test_context_uses_canonical_read_layer(tmp_path) -> None:
+    from fxi_novel.knowledge import archive
+
+    server = _server(tmp_path)
+    server.create_work("作品")
+    work = server.resolve_work("作品")
+    archive.apply_archive_changes(server.db, work["id"], 1, [{
+        "entry_key": "五:唐三:境界", "module": "五",
+        "info_type": "dynamic", "subject": "唐三",
+        "predicate": "境界", "value": "第一重",
+    }])
+    archive.set_work_profile(server.db, work["id"], read_layer="canonical")
+    context = server.context("作品", 2, 60_000)
+    assert context["read_layer"] == "canonical"
+    assert context["sections"][0]["kind"] == "canonical_archive"
+    assert "唐三·境界" in context["markdown"]
 
 
 def test_context_assembles_active_documents(tmp_path) -> None:

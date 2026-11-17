@@ -60,21 +60,118 @@ class KnowledgeClient:
         return self._request("GET", "/api/search", params=params)
 
     def story(
-        self, work: str, *, category: str | None = None,
-        page_size: int = 20, offset: int = 0,
+        self, work: str, *, subject: str | None = None,
+        module: str | None = None, page_size: int = 20, offset: int = 0,
     ) -> dict:
         params: dict[str, Any] = {
             "work": work, "page_size": page_size, "offset": offset,
         }
-        if category:
-            params["category"] = category
+        if subject:
+            params["subject"] = subject
+        if module:
+            params["module"] = module
         return self._request("GET", "/api/story", params=params)
+
+    def canonical(
+        self, work: str, *, module: str | None = None,
+        info_type: str | None = None, limit: int = 100, offset: int = 0,
+        subject: str | None = None, entry_key: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {
+            "work": work, "limit": limit, "offset": offset,
+        }
+        for key, value in (
+            ("module", module), ("info_type", info_type),
+            ("subject", subject), ("entry_key", entry_key),
+        ):
+            if value is not None:
+                params[key] = value
+        return self._request("GET", "/api/canonical", params=params)
+
+    def apply_canonical(
+        self, work: str, chapter_index: int, changes: list[dict],
+    ) -> dict:
+        return self._request(
+            "POST", "/api/canonical/apply", write=True,
+            json={
+                "work": work, "chapter_index": chapter_index,
+                "changes": changes,
+            },
+        )
+
+    def canonical_duplicates(self, work: str) -> dict:
+        return self._request(
+            "GET", "/api/canonical/duplicates", params={"work": work},
+        )
+
+    def dedupe_canonical(self, work: str) -> dict:
+        return self._request(
+            "POST", "/api/canonical/dedupe", write=True,
+            json={"work": work},
+        )
+
+    def reconcile(self, work: str, chapter: int) -> dict:
+        return self._request(
+            "GET", "/api/reconcile",
+            params={"work": work, "chapter": chapter},
+        )
+
+    def archive_changes(
+        self, work: str, *, chapter: int | None = None,
+        module: str | None = None, entry_key: str | None = None,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work}
+        for key, value in (
+            ("chapter", chapter), ("module", module), ("entry_key", entry_key),
+        ):
+            if value is not None:
+                params[key] = value
+        return self._request("GET", "/api/archive_changes", params=params)
 
     def entity(self, name: str, *, work: str | None = None) -> dict:
         params: dict[str, Any] = {"name": name}
         if work:
             params["work"] = work
         return self._request("GET", "/api/entity", params=params)
+
+    def events(
+        self, work: str, *, chapter: int | None = None,
+        participant: str | None = None, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work, "limit": limit, "offset": offset}
+        if chapter is not None:
+            params["chapter"] = chapter
+        if participant:
+            params["participant"] = participant
+        return self._request("GET", "/api/events", params=params)
+
+    def knowledge(
+        self, work: str, *, holder: str | None = None,
+        chapter: int | None = None, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work, "limit": limit, "offset": offset}
+        if holder:
+            params["holder"] = holder
+        if chapter is not None:
+            params["chapter"] = chapter
+        return self._request("GET", "/api/knowledge", params=params)
+
+    def relations(
+        self, work: str, *, from_name: str | None = None,
+        to_name: str | None = None, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        params: dict[str, Any] = {"work": work, "limit": limit, "offset": offset}
+        if from_name:
+            params["from"] = from_name
+        if to_name:
+            params["to"] = to_name
+        return self._request("GET", "/api/relations", params=params)
+
+    def relations_between(self, work: str, left: str, right: str) -> dict:
+        return self._request(
+            "GET", "/api/relations",
+            params={"work": work, "between": f"{left},{right}"},
+        )
 
     def audit(self, work: str, *, llm: bool = False) -> dict:
         return self._request(
@@ -111,8 +208,11 @@ class KnowledgeClient:
     def delete_source(self, source_id: str) -> dict:
         return self._request("DELETE", f"/api/sources/{source_id}", write=True)
 
-    def parse(self, work: str, *, source_ids: list[str] | None = None) -> dict:
-        payload: dict[str, Any] = {"work": work}
+    def parse(
+        self, work: str, *, source_ids: list[str] | None = None,
+        mode: str = "chapter_memory",
+    ) -> dict:
+        payload: dict[str, Any] = {"work": work, "mode": mode}
         if source_ids:
             payload["source_ids"] = source_ids
         return self._request("POST", "/api/parse", write=True, json=payload)
@@ -160,9 +260,11 @@ class KnowledgeClient:
     def documents(
         self, work: str, *, kind: str | None = None,
         scope_key: str | None = None, version: int | None = None,
-        status: str | None = None,
+        status: str | None = None, limit: int = 100, offset: int = 0,
     ) -> dict:
-        params: dict[str, Any] = {"work": work}
+        params: dict[str, Any] = {
+            "work": work, "limit": limit, "offset": offset,
+        }
         for key, value in (
             ("kind", kind), ("scope_key", scope_key),
             ("version", version), ("status", status),

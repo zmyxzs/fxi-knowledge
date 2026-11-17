@@ -164,6 +164,16 @@ OPENAPI_SPEC: dict[str, Any] = {
         },
         "/api/search": {"get": {"summary": "Lexical search with cards"}},
         "/api/story": {"get": {"summary": "Structured story records"}},
+        "/api/canonical": {"get": {"summary": "Canonical archive entries"}},
+        "/api/canonical/apply": {
+            "post": {"summary": "Apply canonical archive changes", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/canonical/duplicates": {"get": {"summary": "Find duplicate canonical entries"}},
+        "/api/canonical/dedupe": {
+            "post": {"summary": "Archive lower-priority canonical duplicates", "security": [{"ApiKeyAuth": []}]},
+        },
+        "/api/reconcile": {"get": {"summary": "Reconcile evidence with canonical changes"}},
+        "/api/archive_changes": {"get": {"summary": "Canonical change log"}},
         "/api/entity": {"get": {"summary": "Entity dossier"}},
         "/api/work_types": {
             "get": {"summary": "Registered work types"},
@@ -206,12 +216,36 @@ OPENAPI_SPEC: dict[str, Any] = {
 }
 
 
+def _chapter_from_title(title) -> int | None:
+    match = re.search(r"第0*(\d+)章", str(title or ""))
+    return int(match.group(1)) if match else None
+
+
 def _first_present(mapping: dict, keys: tuple[str, ...]):
     for key in keys:
         value = mapping.get(key)
         if value is not None and value != "":
             return value
     return ""
+
+
+def _canonical_markdown(records: list[dict]) -> str:
+    groups: dict[str, list[str]] = {}
+    for record in records:
+        payload = record.get("payload") or {}
+        module = str(record.get("module") or "未分模块")
+        subject = str(payload.get("subject") or payload.get("entity") or "")
+        predicate = str(payload.get("predicate") or payload.get("field") or "")
+        value = payload.get("value", payload.get("to", ""))
+        if not isinstance(value, str):
+            value = json.dumps(value, ensure_ascii=False)
+        line = f"- {subject}·{predicate}：{value}"
+        groups.setdefault(module, []).append(line)
+    lines = []
+    for module in sorted(groups):
+        lines.append(f"### 模块 {module}")
+        lines.extend(groups[module])
+    return "\n".join(lines)
 
 
 class KnowledgeServer:
@@ -383,6 +417,9 @@ class KnowledgeServer:
                 "score": float(getattr(item, "score", 0.0)),
                 "text": str(getattr(item, "text", "")),
                 "source": getattr(getattr(item, "source", None), "title", None),
+                "chapter_index": _chapter_from_title(
+                    getattr(getattr(item, "source", None), "title", None)
+                ),
                 "cards": cards[:5],
             })
         return {
@@ -392,18 +429,58 @@ class KnowledgeServer:
 
     def story(
         self, work: str | None, category: str | None, page_size: int,
-        offset: int = 0,
+        offset: int = 0, layer: str | None = None,
+        *, subject: str | None = None, module: str | None = None,
+        info_type: str | None = None, chapter: int | None = None,
+        entry_key: str | None = None,
     ) -> dict:
         row = self.resolve_work(work)
+        if layer is None:
+            layer = str(
+                archive.get_work_profile(self.db, row["id"]).get("read_layer")
+                or "evidence"
+            )
         records = archive.list_story_records(
-            self.db, row["id"], category=category, only_projected=True,
+            self.db, row["id"], category=category,
+            only_projected=True, layer=None if layer == "all" else layer,
+            status="active",
         )
         if category and not records:
             records = [
                 record for record in archive.list_story_records(
                     self.db, row["id"], only_projected=True,
+                    layer=None if layer == "all" else layer,
+                    status="active",
                 )
                 if record["payload"].get("graph_category") == category
+            ]
+        if subject:
+            needle = subject.lower()
+            records = [
+                record for record in records
+                if needle in " ".join([
+                    str(record.get("entry_key") or ""),
+                    str(record["payload"].get("subject") or ""),
+                    str(record["payload"].get("entity") or ""),
+                    str(record["payload"].get("holder") or ""),
+                ]).lower()
+            ]
+        if module:
+            records = [record for record in records if record["module"] == module]
+        if info_type:
+            records = [
+                record for record in records
+                if record["info_type"] == info_type
+            ]
+        if chapter is not None:
+            records = [
+                record for record in records
+                if record["chapter_index"] == int(chapter)
+            ]
+        if entry_key:
+            records = [
+                record for record in records
+                if record.get("entry_key") == entry_key
             ]
         offset = max(0, int(offset))
         page = records[offset: offset + max(1, int(page_size))]
@@ -414,11 +491,17 @@ class KnowledgeServer:
                 "category": record["category"],
                 "graph_category": payload.get("graph_category"),
                 "chapter_index": record["chapter_index"],
+                "entry_key": record.get("entry_key"),
+                "layer": record.get("layer"),
+                "module": record.get("module"),
+                "info_type": record.get("info_type"),
+                "revision": record.get("revision"),
+                "status": record.get("status"),
                 "subject": _first_present(
-                    payload, ("entity", "holder", "thread", "name"),
+                    payload, ("entity", "holder", "thread", "name", "subject"),
                 ),
                 "predicate": _first_present(
-                    payload, ("field", "kind"),
+                    payload, ("field", "kind", "predicate"),
                 ) or record["category"],
                 "value": _first_present(
                     payload,
@@ -439,8 +522,225 @@ class KnowledgeServer:
             "items": items,
         }
 
-    def entity(self, name: str, work: str | None, at_chapter: int | None = None) -> dict:
+    def canonical(
+        self, work: str | None, module: str | None, info_type: str | None,
+        limit: int = 100, offset: int = 0,
+        *, subject: str | None = None, entry_key: str | None = None,
+    ) -> dict:
         row = self.resolve_work(work)
+        records = archive.list_story_records(
+            self.db, row["id"], layer="canonical", status="active",
+        )
+        if module:
+            records = [record for record in records if record["module"] == module]
+        if info_type:
+            records = [
+                record for record in records
+                if record["info_type"] == info_type
+            ]
+        if subject:
+            needle = subject.lower()
+            records = [
+                record for record in records
+                if needle in " ".join([
+                    str(record.get("entry_key") or ""),
+                    str(record["payload"].get("subject") or ""),
+                    str(record["payload"].get("entity") or ""),
+                ]).lower()
+            ]
+        if entry_key:
+            records = [
+                record for record in records
+                if record.get("entry_key") == entry_key
+            ]
+        offset = max(0, int(offset))
+        page = records[offset: offset + max(1, int(limit))]
+        next_offset = offset + len(page)
+        return {
+            "work": row["title"],
+            "total": len(records),
+            "offset": offset,
+            "next_offset": next_offset if next_offset < len(records) else None,
+            "records": page,
+        }
+
+    def canonical_duplicates(self, work: str | None) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            "duplicates": archive.find_canonical_duplicates(self.db, row["id"]),
+        }
+
+    def dedupe_canonical(self, work: str | None) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            **archive.dedupe_canonical(self.db, row["id"]),
+        }
+
+    def apply_canonical(self, work: str | None, body: dict) -> dict:
+        row = self.resolve_work(work)
+        chapter_index = body.get("chapter_index")
+        if chapter_index is None:
+            raise ValueError("chapter_index is required")
+        changes = body.get("changes")
+        if not isinstance(changes, list):
+            raise ValueError("changes must be a list")
+        result = archive.apply_archive_changes(
+            self.db, row["id"], int(chapter_index), changes,
+        )
+        return {
+            "work": row["title"], "chapter_index": int(chapter_index), **result,
+        }
+
+    def reconcile(self, work: str | None, chapter_index: int) -> dict:
+        row = self.resolve_work(work)
+        return {
+            "work": row["title"],
+            **archive.reconcile_chapter(self.db, row["id"], int(chapter_index)),
+        }
+
+    def archive_changes(
+        self, work: str | None, chapter_index: int | None,
+        *, module: str | None = None, entry_key: str | None = None,
+    ) -> dict:
+        row = self.resolve_work(work)
+        changes = archive.list_archive_changes(
+            self.db, row["id"], chapter_index=chapter_index,
+        )
+        if module:
+            changes = [change for change in changes if change["module"] == module]
+        if entry_key:
+            changes = [
+                change for change in changes
+                if change["entry_key"] == entry_key
+            ]
+        return {"work": row["title"], "changes": changes}
+
+    def events(
+        self, work: str | None, chapter: int | None, participant: str | None,
+        *, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        row = self.resolve_work(work)
+        events_total = archive.count_scene_records(
+            self.db, row["id"], chapter_index=chapter, participant=participant,
+        )
+        items = archive.list_scene_records(
+            self.db, row["id"], chapter_index=chapter, participant=participant,
+            limit=limit, offset=offset,
+        )
+        return {
+            "work": row["title"], "total": events_total, "items": items,
+        }
+
+    def knowledge_records(
+        self, work: str | None, holder: str | None, chapter: int | None,
+        *, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        row = self.resolve_work(work)
+        total = archive.count_cognition_records(
+            self.db, row["id"], chapter_index=chapter, holder=holder,
+        )
+        items = archive.list_cognition_records(
+            self.db, row["id"], chapter_index=chapter, holder=holder,
+            limit=limit, offset=offset,
+        )
+        return {
+            "work": row["title"], "total": total, "items": items,
+        }
+
+    def relations(
+        self, work: str | None, from_name: str | None, to_name: str | None,
+        *, limit: int = 50, offset: int = 0,
+    ) -> dict:
+        row = self.resolve_work(work)
+        all_items = archive.list_relation_records(
+            self.db, row["id"], from_name=from_name, to_name=to_name,
+            limit=10000,
+        )
+        return {
+            "work": row["title"], "total": len(all_items),
+            "items": all_items[offset:offset + limit],
+        }
+
+    def relations_between(self, work: str | None, left: str, right: str) -> dict:
+        row = self.resolve_work(work)
+        items = []
+        for source, target, direction in (
+            (left, right, f"{left}->{right}"),
+            (right, left, f"{right}->{left}"),
+        ):
+            for item in archive.list_relation_records(
+                self.db, row["id"], from_name=source, to_name=target,
+            ):
+                items.append({**item, "direction": direction})
+        unique = {
+            (
+                item["from"], item["to"], item["relation"],
+                item["chapter"], item["direction"],
+            ): item
+            for item in items
+        }
+        result = list(unique.values())
+        return {
+            "work": row["title"], "between": [left, right],
+            "total": len(result), "items": result,
+        }
+
+    def entity(
+        self, name: str, work: str | None, at_chapter: int | None = None,
+        *, limit: int = 20,
+    ) -> dict:
+        row = self.resolve_work(work)
+        canonical = archive.canonical_entries_for_entity(
+            self.db, row["id"], name, at_chapter=at_chapter,
+        )
+        events_total = archive.count_scene_records(
+            self.db, row["id"], max_chapter=at_chapter, participant=name,
+        )
+        events = archive.list_scene_records(
+            self.db, row["id"], max_chapter=at_chapter, participant=name,
+            limit=limit,
+        )
+        relation_items = (
+            archive.list_relation_records(
+                self.db, row["id"], from_name=name, limit=10000,
+            )
+            + archive.list_relation_records(
+                self.db, row["id"], to_name=name, limit=10000,
+            )
+        )
+        relations_all = list({
+            (item["from"], item["to"], item["relation"], item["chapter"]): item
+            for item in relation_items
+        }.values())
+        knowledge_total = archive.count_cognition_records(
+            self.db, row["id"], max_chapter=at_chapter, holder=name,
+        )
+        knowledge = archive.list_cognition_records(
+            self.db, row["id"], max_chapter=at_chapter, holder=name,
+            limit=limit,
+        )
+        threads_total = archive.count_thread_records(
+            self.db, row["id"], max_chapter=at_chapter, entity=name,
+        )
+        threads = archive.list_thread_records(
+            self.db, row["id"], max_chapter=at_chapter, entity=name,
+            limit=limit,
+        )
+        if at_chapter is not None:
+            relations_all = [
+                item for item in relations_all
+                if item.get("chapter") is not None and item["chapter"] <= at_chapter
+            ]
+        counts = {
+            "canonical": len(canonical),
+            "events": events_total,
+            "relations": len(relations_all),
+            "knowledge": knowledge_total,
+            "threads": threads_total,
+        }
+        relations = relations_all[:limit]
         archived = archive.get_entity(self.db, row["id"], name)
         if archived is not None:
             snapshot = archive.get_snapshot(
@@ -449,9 +749,26 @@ class KnowledgeServer:
             return {
                 "work": row["title"], "archive": True, **archived,
                 "snapshot": snapshot,
+                "canonical": canonical,
                 "related": archive.related_entities(
                     self.db, row["id"], name, at_chapter=at_chapter,
                 ),
+                "events": events,
+                "relations": relations,
+                "knowledge": knowledge,
+                "threads": threads,
+                "counts": counts,
+            }
+        if canonical:
+            return {
+                "work": row["title"], "archive": False, "entity": name,
+                "canonical": canonical, "total": len(canonical),
+                "snapshot": None, "related": [],
+                "events": events,
+                "relations": relations,
+                "knowledge": knowledge,
+                "threads": threads,
+                "counts": counts,
             }
         dossier = self.knowledge.query_entity_dossier(
             space=self.space, work_id=row["id"], entity=name, branch=self.branch,
@@ -496,6 +813,9 @@ class KnowledgeServer:
         allow_debt = body.get("allow_debt")
         if allow_debt is not None and not isinstance(allow_debt, bool):
             raise ValueError("allow_debt must be a boolean")
+        read_layer = body.get("read_layer")
+        if read_layer is not None and read_layer not in {"evidence", "canonical"}:
+            raise ValueError("read_layer must be evidence or canonical")
         return {
             "work": row["title"],
             **archive.set_work_profile(
@@ -510,6 +830,7 @@ class KnowledgeServer:
                 archive_modules=modules,
                 glossary=glossary,
                 allow_debt=allow_debt,
+                read_layer=read_layer,
             ),
         }
 
@@ -664,6 +985,7 @@ class KnowledgeServer:
     def documents(
         self, work: str | None, kind: str | None, scope_key: str | None,
         version: int | None, status: str | None = None,
+        limit: int = 100, offset: int = 0,
     ) -> dict:
         row = self.resolve_work(work)
         if scope_key:
@@ -672,11 +994,18 @@ class KnowledgeServer:
                 version=version,
             )
             return {"work": row["title"], "document": document}
+        documents = archive.list_documents(
+            self.db, row["id"], kind=kind, status=status,
+        )
+        offset = max(0, int(offset))
+        page = documents[offset: offset + max(1, int(limit))]
+        next_offset = offset + len(page)
         return {
             "work": row["title"],
-            "documents": archive.list_documents(
-                self.db, row["id"], kind=kind, status=status,
-            ),
+            "total": len(documents),
+            "offset": offset,
+            "next_offset": next_offset if next_offset < len(documents) else None,
+            "documents": page,
         }
 
     def search_documents(
@@ -756,18 +1085,31 @@ class KnowledgeServer:
             else archive.next_chapter_index(self.db, row["id"])
         )
         max_chars = max(5_000, min(200_000, int(max_chars or 60_000)))
+        profile = archive.get_work_profile(self.db, row["id"])
+        read_layer = str(profile.get("read_layer") or "evidence")
         candidates: list[tuple[str, str, dict | None, str]] = []
 
-        long_doc = archive.get_document(
-            self.db, row["id"], "long_term_archive", "main", status="active",
-        )
-        if long_doc:
-            content = long_doc.get("content") or {}
-            text = (
-                str(content.get("archive") or "")
-                if isinstance(content, dict) else str(content)
+        if read_layer == "canonical":
+            canonical = archive.list_story_records(
+                self.db, row["id"], layer="canonical",
+                at_chapter=chapter_index, status="active",
             )
-            candidates.append(("long_term_archive", "长期档案", long_doc, text))
+            canonical_text = _canonical_markdown(canonical)
+            if canonical_text:
+                candidates.append((
+                    "canonical_archive", "当前档案", None, canonical_text,
+                ))
+        else:
+            long_doc = archive.get_document(
+                self.db, row["id"], "long_term_archive", "main", status="active",
+            )
+            if long_doc:
+                content = long_doc.get("content") or {}
+                text = (
+                    str(content.get("archive") or "")
+                    if isinstance(content, dict) else str(content)
+                )
+                candidates.append(("long_term_archive", "长期档案", long_doc, text))
 
         chapter_doc = None
         for index in range(chapter_index - 1, 0, -1):
@@ -804,9 +1146,12 @@ class KnowledgeServer:
             ))
 
         try:
-            compiled = archive.compile_archive(
-                self.db, row["id"], chapter_index, "", allow_future=True,
-            )["compiled_archive_markdown"]
+            compiled = (
+                archive.compile_archive(
+                    self.db, row["id"], chapter_index, "", allow_future=True,
+                )["compiled_archive_markdown"]
+                if read_layer != "canonical" else ""
+            )
         except ValueError:
             compiled = ""
         if compiled:
@@ -841,6 +1186,7 @@ class KnowledgeServer:
         return {
             "work": row["title"],
             "chapter_index": chapter_index,
+            "read_layer": read_layer,
             "budget_chars": max_chars,
             "total_chars": sum(section["chars"] for section in sections),
             "truncated": truncated,
@@ -1007,7 +1353,7 @@ class KnowledgeServer:
 
     def start_parse(
         self, work: str | None, source_ids: list[str] | None,
-        *, mode: str = "state_update", force: bool = False,
+        *, mode: str = "chapter_memory", force: bool = False,
         round_number: int = 1, base_scope_key: str | None = None,
     ) -> dict:
         if mode not in {
@@ -1307,7 +1653,15 @@ class KnowledgeServer:
                     if meta.get("chapter_index") is not None
                     else archive.next_chapter_index(self.db, row["id"])
                 )
-                chapters.append({"chapter_index": chapter_index, "text": text})
+                memory = archive.get_document(
+                    self.db, row["id"], "chapter_memory",
+                    f"chapter:{chapter_index}", status="active",
+                )
+                chapters.append({
+                    "chapter_index": chapter_index,
+                    "text": text,
+                    "chapter_memory": memory.get("content") if memory else None,
+                })
             if not chapters:
                 return {
                     "status": "failed", "mode": "archive_update",
@@ -1330,22 +1684,39 @@ class KnowledgeServer:
                     )["compiled_archive_markdown"]
                 else:
                     previous_archive = "（无原长期档案，这是首次建档）"
-            output = await archive_extraction.extract_archive_update_with_openai(
-                previous_archive, chapters,
-                work_title=row["title"],
-                base_url=self.llm_base_url,
-                api_key=self.llm_api_key,
-                model=self.llm_model,
-            )
-            result = archive_extraction.apply_archive_update(
-                self.db, row["id"], output,
-                source_chapters=[chapter["chapter_index"] for chapter in chapters],
-                previous_archive=previous_archive,
-                model=self.llm_model,
+            results = []
+            for chapter in chapters:
+                output = await archive_extraction.extract_archive_update_with_openai(
+                    previous_archive, [chapter],
+                    work_title=row["title"],
+                    base_url=self.llm_base_url,
+                    api_key=self.llm_api_key,
+                    model=self.llm_model,
+                )
+                result = archive_extraction.apply_archive_update(
+                    self.db, row["id"], output,
+                    source_chapters=[chapter["chapter_index"]],
+                    previous_archive=previous_archive,
+                    model=self.llm_model,
+                )
+                results.append({
+                    "chapter_index": chapter["chapter_index"], **result,
+                })
+                if not result.get("valid"):
+                    break
+                previous_archive = str(
+                    (output.get("archive") if isinstance(output, dict) else "") or ""
+                )
+            status = (
+                "completed"
+                if len(results) == len(chapters)
+                and all(item.get("valid") for item in results)
+                else "partial"
             )
             return {
-                "status": "completed", "mode": "archive_update",
-                **result,
+                "status": status, "mode": "archive_update",
+                "chapters": results,
+                **results[-1],
             }
         except Exception as exc:  # noqa: BLE001 - surface on the job
             return {
@@ -1624,12 +1995,51 @@ def handler_for(server: KnowledgeServer):
                         include_inactive=include_inactive, scope=scope,
                     ))
                     return
+                if parsed.path == "/api/canonical":
+                    if not self._require_write():
+                        return
+                    limit = min(500, max(1, int(params.get("limit", "100"))))
+                    offset = max(0, int(params.get("offset", "0")))
+                    self._json(server.canonical(
+                        params.get("work"), params.get("module"),
+                        params.get("info_type"), limit, offset,
+                        subject=params.get("subject"),
+                        entry_key=params.get("entry_key"),
+                    ))
+                    return
+                if parsed.path == "/api/canonical/duplicates":
+                    if not self._require_write():
+                        return
+                    self._json(server.canonical_duplicates(params.get("work")))
+                    return
+                if parsed.path == "/api/reconcile":
+                    if not self._require_write():
+                        return
+                    chapter = params.get("chapter")
+                    if chapter is None:
+                        raise ValueError("chapter is required")
+                    self._json(server.reconcile(
+                        params.get("work"), int(chapter),
+                    ))
+                    return
+                if parsed.path == "/api/archive_changes":
+                    if not self._require_write():
+                        return
+                    chapter = params.get("chapter")
+                    self._json(server.archive_changes(
+                        params.get("work"),
+                        int(chapter) if chapter is not None else None,
+                        module=params.get("module"),
+                        entry_key=params.get("entry_key"),
+                    ))
+                    return
                 if parsed.path == "/api/story":
                     page_size = min(100, max(1, int(params.get("page_size", "20"))))
                     offset = max(0, int(params.get("offset", "0")))
                     self._json(server.story(
-                        params.get("work"), params.get("category"),
-                        page_size, offset,
+                        params.get("work"), None, page_size, offset, None,
+                        subject=params.get("subject"),
+                        module=params.get("module"),
                     ))
                     return
                 if parsed.path == "/api/entity":
@@ -1641,12 +2051,53 @@ def handler_for(server: KnowledgeServer):
                     self._json(server.entity(
                         name, params.get("work"),
                         int(at_chapter) if at_chapter is not None else None,
+                        limit=min(100, max(1, int(params.get("limit", "20")))),
+                    ))
+                    return
+                if parsed.path == "/api/events":
+                    chapter = params.get("chapter")
+                    self._json(server.events(
+                        params.get("work"),
+                        int(chapter) if chapter is not None else None,
+                        (params.get("participant") or "").strip() or None,
+                        limit=min(200, max(1, int(params.get("limit", "50")))),
+                        offset=max(0, int(params.get("offset", "0"))),
+                    ))
+                    return
+                if parsed.path == "/api/knowledge":
+                    chapter = params.get("chapter")
+                    self._json(server.knowledge_records(
+                        params.get("work"),
+                        (params.get("holder") or "").strip() or None,
+                        int(chapter) if chapter is not None else None,
+                        limit=min(200, max(1, int(params.get("limit", "50")))),
+                        offset=max(0, int(params.get("offset", "0"))),
+                    ))
+                    return
+                if parsed.path == "/api/relations":
+                    between = (params.get("between") or "").strip()
+                    if between:
+                        parts = [part.strip() for part in between.split(",", 1)]
+                        if len(parts) != 2 or not all(parts):
+                            raise ValueError("between must be 'A,B'")
+                        self._json(server.relations_between(
+                            params.get("work"), parts[0], parts[1],
+                        ))
+                        return
+                    self._json(server.relations(
+                        params.get("work"),
+                        (params.get("from") or "").strip() or None,
+                        (params.get("to") or "").strip() or None,
+                        limit=min(200, max(1, int(params.get("limit", "50")))),
+                        offset=max(0, int(params.get("offset", "0"))),
                     ))
                     return
                 if parsed.path == "/api/work_profile":
                     self._json(server.work_profile(params.get("work")))
                     return
                 if parsed.path == "/api/story_record":
+                    if not self._require_write():
+                        return
                     category = (params.get("category") or "").strip() or None
                     at_chapter = params.get("at_chapter")
                     limit = min(1000, max(1, int(params.get("limit", "500"))))
@@ -1659,11 +2110,13 @@ def handler_for(server: KnowledgeServer):
                     return
                 if parsed.path == "/api/documents":
                     version = params.get("version")
+                    limit = min(500, max(1, int(params.get("limit", "100"))))
+                    offset = max(0, int(params.get("offset", "0")))
                     self._json(server.documents(
                         params.get("work"), params.get("kind"),
                         params.get("scope_key"),
                         int(version) if version else None,
-                        params.get("status"),
+                        params.get("status"), limit, offset,
                     ))
                     return
                 if parsed.path == "/api/documents/search":
@@ -1768,6 +2221,12 @@ def handler_for(server: KnowledgeServer):
                 if method == "POST" and parts == ["api", "story_record"]:
                     self._json(server.add_story_record(body.get("work"), body), 201)
                     return
+                if method == "POST" and parts == ["api", "canonical", "apply"]:
+                    self._json(server.apply_canonical(body.get("work"), body))
+                    return
+                if method == "POST" and parts == ["api", "canonical", "dedupe"]:
+                    self._json(server.dedupe_canonical(body.get("work")))
+                    return
                 if method == "POST" and parts == ["api", "documents"]:
                     self._json(server.save_document(body.get("work"), body), 201)
                     return
@@ -1806,7 +2265,7 @@ def handler_for(server: KnowledgeServer):
                         raise ValueError("source_ids must be a list of strings")
                     self._json(server.start_parse(
                         body.get("work"), [str(item) for item in ids] if ids else None,
-                        mode=str(body.get("mode") or "state_update"),
+                        mode=str(body.get("mode") or "chapter_memory"),
                         force=bool(body.get("force")),
                         round_number=int(body.get("round") or 1),
                         base_scope_key=(

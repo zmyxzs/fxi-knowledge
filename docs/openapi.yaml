@@ -172,9 +172,64 @@ paths:
       summary: 结构化故事记录（只读档案）
       parameters:
         - {name: work, in: query, required: true, schema: {type: string}}
-        - {name: category, in: query, schema: {type: string}}
+        - {name: subject, in: query, schema: {type: string}}
+        - {name: module, in: query, schema: {type: string}}
         - {name: page_size, in: query, schema: {type: integer, default: 20}}
         - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        "200": {description: OK}
+  /api/canonical:
+    get:
+      summary: canonical 档案条目
+      security: [{ApiKeyAuth: []}]
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: module, in: query, schema: {type: string}}
+        - {name: info_type, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 100}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+        - {name: subject, in: query, schema: {type: string}}
+        - {name: entry_key, in: query, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+  /api/canonical/apply:
+    post:
+      summary: 应用 canonical changes
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/canonical/duplicates:
+    get:
+      summary: 查找重复 canonical 条目
+      security: [{ApiKeyAuth: []}]
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+      responses:
+        "200": {description: OK}
+  /api/canonical/dedupe:
+    post:
+      summary: 归档低优先级重复条目
+      security: [{ApiKeyAuth: []}]
+      responses:
+        "200": {description: OK}
+  /api/reconcile:
+    get:
+      summary: 对账章节证据与 canonical changes
+      security: [{ApiKeyAuth: []}]
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: chapter, in: query, required: true, schema: {type: integer}}
+      responses:
+        "200": {description: OK}
+  /api/archive_changes:
+    get:
+      summary: canonical 变更日志
+      security: [{ApiKeyAuth: []}]
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: chapter, in: query, schema: {type: integer}}
+        - {name: module, in: query, schema: {type: string}}
+        - {name: entry_key, in: query, schema: {type: string}}
       responses:
         "200": {description: OK}
   /api/entity:
@@ -183,6 +238,41 @@ paths:
       parameters:
         - {name: name, in: query, required: true, schema: {type: string}}
         - {name: work, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 20}}
+      responses:
+        "200": {description: OK}
+  /api/events:
+    get:
+      summary: 事件/场景查询
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: chapter, in: query, schema: {type: integer}}
+        - {name: participant, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        "200": {description: OK}
+  /api/knowledge:
+    get:
+      summary: 角色认知/POV 查询
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: holder, in: query, schema: {type: string}}
+        - {name: chapter, in: query, schema: {type: integer}}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
+      responses:
+        "200": {description: OK}
+  /api/relations:
+    get:
+      summary: 人物关系查询
+      parameters:
+        - {name: work, in: query, required: true, schema: {type: string}}
+        - {name: from, in: query, schema: {type: string}}
+        - {name: to, in: query, schema: {type: string}}
+        - {name: between, in: query, schema: {type: string}, description: "A,B 一次返回两个方向"}
+        - {name: limit, in: query, schema: {type: integer, default: 50}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
       responses:
         "200": {description: OK}
   /api/audit:
@@ -214,6 +304,7 @@ paths:
                   items: {type: string}
                 mode:
                   type: string
+                  default: chapter_memory
                   enum: [state_update, deconstruct_extract, memory, chapter_memory, archive_update, storyline_network]
                 round: {type: integer, default: 1}
                 base_scope_key: {type: string}
@@ -256,6 +347,7 @@ paths:
   /api/story_record:
     get:
       summary: 档案故事记录
+      security: [{ApiKeyAuth: []}]
       parameters:
         - {name: work, in: query, required: true, schema: {type: string}}
         - {name: category, in: query, schema: {type: string}}
@@ -284,6 +376,8 @@ paths:
         - {name: scope_key, in: query, schema: {type: string}}
         - {name: version, in: query, schema: {type: integer}}
         - {name: status, in: query, schema: {type: string}}
+        - {name: limit, in: query, schema: {type: integer, default: 100}}
+        - {name: offset, in: query, schema: {type: integer, default: 0}}
       responses:
         "200": {description: OK}
     post:

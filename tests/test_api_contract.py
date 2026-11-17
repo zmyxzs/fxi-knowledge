@@ -10,6 +10,12 @@ REQUIRED = {
     "/api/work_types",
     "/api/work_profile",
     "/api/story_record",
+    "/api/canonical",
+    "/api/canonical/apply",
+    "/api/canonical/duplicates",
+    "/api/canonical/dedupe",
+    "/api/reconcile",
+    "/api/archive_changes",
     "/api/compile_archive",
     "/api/documents",
     "/api/documents/review",
@@ -56,5 +62,7 @@ def test_client_exposes_artifact_methods() -> None:
         "work_types", "work_profile", "set_work_profile", "story_records",
         "compile_archive", "documents", "save_document", "review_document",
         "reproject_document", "search_documents", "context", "audit_draft",
+        "canonical", "apply_canonical", "reconcile", "archive_changes",
+        "canonical_duplicates", "dedupe_canonical",
     ):
         assert hasattr(client, method), method

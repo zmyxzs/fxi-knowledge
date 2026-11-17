@@ -207,13 +207,17 @@ print(client.audit("示例作品", llm=True))
 | GET | `/api/work_types` | 作品类型注册表 |
 | POST | `/api/work_types` | 注册类型 `{work_type, label, description}` |
 | GET | `/api/work_profile?work=` | 作品画像 |
-| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary, allow_debt}` |
-| GET | `/api/documents?work=&kind=&scope_key=&version=` | 文档工件列表或单件 |
+| POST | `/api/work_profile` | `{work, work_type, genre, world_summary, protagonist_name, resource_units, entity_types, story_categories, archive_modules, glossary, allow_debt, read_layer}` |
+| GET | `/api/documents?work=&kind=&scope_key=&version=&status=&limit=&offset=` | 文档工件列表或单件 |
 | POST | `/api/documents` | 保存文档工件 `{work, kind, scope_key, content, markdown, source_chapters, status, prompt_name, prompt_version, model, schema_version}` |
 | POST | `/api/documents/review` | 接受/拒绝工件 `{work, kind, scope_key, version, action, base_version}`；冲突返回 409 |
 | POST | `/api/documents/reproject` | 重新投影章节记忆 `{work, kind, scope_key, version}` |
 | GET | `/api/documents/search?work=&q=&kind=&limit=` | 按 FTS 检索 active 工件 |
 | GET | `/api/context?work=&chapter=&max_chars=` | 组装长期档案、上一章章节记忆、线网、编译档案 |
+| GET | `/api/canonical?work=&module=&info_type=&limit=&offset=` | 读取 canonical 影子层 |
+| POST | `/api/canonical/apply` | 应用结构化 changes `{work, chapter_index, changes}` |
+| GET | `/api/reconcile?work=&chapter=` | 对账章节证据与 canonical changes |
+| GET | `/api/archive_changes?work=&chapter=` | canonical 变更日志 |
 
 工件状态：`draft → reviewed → active`；`active` 只能有一个，新 active 会把旧版置为 `superseded`。编辑/删除第 N 章会 supersede `chapter>=N` 的章节记忆，以及受影响的长期档案、线网。  
 投影状态：`pending / done / failed / not_applicable`；失败可用 `/api/documents/reproject` 重放。  
@@ -274,7 +278,8 @@ print(client.audit("示例作品", llm=True))
 `GET /api/entity?name=&work=&at_chapter=`
 
 - `name` 支持标准名或任意别名
-- `at_chapter` 缺省返回最新章节快照
+- `at_chapter` 使用 `kb_archive_change` 回放到该章，返回当时的 canonical/events/knowledge/threads
+- 缺省返回当前状态
 
 ```json
 {
@@ -288,6 +293,74 @@ print(client.audit("示例作品", llm=True))
   "related": [{"name": "赵洵", "surface_relation": "师徒", "location": "山门"}]
 }
 ```
+
+`/api/entity` 同时返回：
+
+```text
+canonical    当前状态条目
+events       该人物参与的场景/事件
+relations    该人物作为 from 或 to 的关系
+knowledge    该人物的认知/POV
+threads      当前未决线程
+```
+
+### 4.5.1 关联查询
+
+```text
+GET /api/events?work=&chapter=&participant=
+GET /api/relations?work=&from=&to=
+GET /api/knowledge?work=&holder=&chapter=
+```
+
+`/api/events` 返回场景/事件：
+
+```json
+{
+  "name": "一万锤的资格考验",
+  "chapter": 4,
+  "participants": ["唐三", "唐昊"],
+  "cause": "...",
+  "outcome": "...",
+  "evidence": "..."
+}
+```
+
+`/api/relations` 返回人物关系：
+
+```json
+{
+  "from": "唐昊",
+  "to": "唐三",
+  "relation": "父子亲近",
+  "value": "首次紧紧拥抱",
+  "chapter": 9
+}
+```
+
+查两个人之间的双向关系：
+
+```text
+GET /api/relations?work=&between=唐昊,唐三
+```
+
+`between` 一次返回 `A->B` 和 `B->A`，每条带 `direction`。
+
+`/api/knowledge` 返回角色认知：
+
+```json
+{
+  "holder": "唐三",
+  "type": "judgment",
+  "content": "唐昊不知道唐三修炼玄玉手",
+  "audience": ["唐三"],
+  "chapter": 9
+}
+```
+
+这些数据来自 `chapter_memory` 的 `scenes/cognition/state_deltas/unresolved` 投影，不额外调用模型。
+
+`/api/entity` 的 `events/relations/knowledge/threads` 默认各返回 20 条，`counts` 给出总数。  
+`/api/events`、`/api/knowledge`、`/api/relations` 支持 `limit/offset`，默认 `limit=50`。
 
 `POST /api/entity`：
 
@@ -314,8 +387,11 @@ print(client.audit("示例作品", llm=True))
 | POST | `/api/story_record` | `{work, category, chapter_index, payload}` |
 | GET | `/api/story_record?work=&category=&at_chapter=&limit=&offset=` | 读取 |
 
-`/api/story` 是统一读取入口：只读档案 `kb_story_record`，支持 `offset` 分页，返回 `source: archive`。旧 graph 数据已通过 `scripts/backfill_graph_story.py` 回填。  
+`/api/story` 是统一读取入口：只支持 `work/subject/module/page_size/offset`，读取层由作品画像 `read_layer` 决定。  
+`/api/canonical` 是内部/高级接口，支持 `subject/module/info_type/entry_key` 过滤；`/api/canonical/apply` 应用结构化 changes。  
+`/api/entity` 会同时返回实体的 `canonical` 条目，便于从人物直接关联当前状态。  
 `/api/story_record` 是档案原始记录与调试入口，支持 `limit/offset`。  
+`/api/canonical`、`/api/reconcile`、`/api/archive_changes`、`/api/story_record` 是管理/调试接口，读取也需要 `X-API-Key`。  
 多作品库中查询接口必须带 `work`，否则返回 400。
 
 ### 4.7 编译
@@ -381,15 +457,21 @@ print(client.audit("示例作品", llm=True))
 `POST /api/parse`
 
 ```json
-{"work": "示例作品", "mode": "state_update", "source_ids": ["可选"]}
+{"work": "示例作品"}
 ```
 
-- `state_update`：档案状态更新
-- `deconstruct_extract`：拆书骨架与锚点
-- `memory`：轻量记忆抽取（实体/事实/状态/场景/线程），约 10–20 秒/章
-- `chapter_memory`：章节剧情记忆（场景因果/认知信息差/Δ状态/未决），写入 `kb_document`
-- `archive_update`：长期档案增量更新，生成草稿与新版本
+默认 `mode=chapter_memory`，不传 `source_ids` 时解析该作品全部来源。
+
+```json
+{"work": "示例作品", "mode": "archive_update", "source_ids": ["可选"]}
+```
+
+- `chapter_memory`：默认模式，章节剧情记忆（场景因果/认知信息差/Δ状态/未决），写入 `kb_document`
+- `archive_update`：长期档案增量更新，生成 changes 与 canonical
 - `storyline_network`：批次线网拆解；二轮用 `round=2` + `base_scope_key`
+- `state_update`：旧档案状态更新
+- `deconstruct_extract`：拆书骨架与锚点
+- `memory`：旧轻量记忆抽取
 
 返回 202：
 
