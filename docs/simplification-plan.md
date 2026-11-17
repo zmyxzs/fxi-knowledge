@@ -1,6 +1,6 @@
 # 简化方案：把长期档案更新变成唯一 canonical
 
-状态：2026-11-11（设计稿，未实施）
+状态：2026-11-11（Phase 0 已实施，影子模式）
 
 ## 1. 知识库到底做什么
 
@@ -392,3 +392,94 @@ chapter_memory 投影 → origin=chapter_memory
 5. 是否先做一个作品试点，再全量？
 
 如果这五条确认，下一步不是继续修 `/api/story`，而是把 `archive_update` 改成 diff 模型，然后删掉一层投影。
+
+---
+
+## 14. Phase 0 实施状态（2026-11-11）
+
+已实施：
+
+- `kb_story_record` 增加 `entry_key/layer/module/info_type/origin/revision/status`
+- 新增 `kb_archive_change` 变更日志
+- 新增 `archive.apply_archive_changes`
+- 新增 `GET /api/canonical`
+- 新增 `POST /api/canonical/apply`
+- `archive-update.md` 增加 `changes`
+- `apply_archive_update` 应用 changes
+- `migrate_canonical.py` 影子迁移
+
+验证：
+
+```text
+神域囚徒
+  evidence 735
+  canonical 564
+  迁移 changes 700
+
+斗罗大陆
+  evidence 155
+  canonical 84
+  迁移 changes 89
+
+本地两章真实模型
+  chapter_memory 2
+  archive_update changes 10 + 34
+  canonical 42
+  reconcile 0.8 / 0.714
+
+生产十二章重放（斗罗大陆）
+  chapter_memory 12
+  archive_update changes 1 + 14 + 23 + 22 + 10 + 10 + 10 + 3 + 15 + 5 + 5 + 3
+  canonical 109
+  evidence 203
+  documents 13
+  change log 124
+  reconcile 12/12 100%，exact_matched 12/12
+  context canonical_archive 4395 + chapter_memory 1257
+  duplicate groups 0
+  missing evidence 0
+```
+
+说明：
+
+- 旧作品已全部删除，生产只保留 `斗罗大陆`
+- 十二章全部走 `chapter_memory → archive_update diff → canonical`
+- 使用 `source_delta` 后，12 章全部 exact 100%
+- 第 11 章旧口径问题已通过重放消除
+- canonical key 为 `主体:字段`，不带模块号
+- canonical 109 比旧 212 少，因为不再把大量重复/派生条目写入
+- `read_layer=canonical`
+- `/api/story` 109，`/api/canonical` 109
+
+读取策略：
+
+```text
+/api/story      默认读作品画像 read_layer
+/api/canonical  读 canonical 影子层
+```
+
+当前作品：
+
+```text
+斗罗大陆
+  read_layer=canonical
+  /api/story → 109
+  evidence → 203
+  canonical → 109
+```
+
+`/api/context` 也已按 `read_layer` 分流：
+
+```text
+canonical:
+  canonical_archive 4395
+  chapter_memory 1257
+  （不再重复 compiled_archive）
+
+evidence:
+  long_term_archive
+  chapter_memory
+  compiled_archive
+```
+
+`/api/documents` 已支持 `limit/offset`。
