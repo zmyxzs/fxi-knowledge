@@ -37,7 +37,8 @@ CREATE TABLE IF NOT EXISTS kb_work_profile (
     story_categories_json TEXT NOT NULL DEFAULT '["power_and_laws","map","faction","active_storyline","foreshadow","completed_storylines","trope_skeleton","style_anchor","timer","redline"]',
     archive_modules_json TEXT NOT NULL DEFAULT '[]',
     glossary_json TEXT NOT NULL DEFAULT '[]',
-    allow_debt INTEGER NOT NULL DEFAULT 0
+    allow_debt INTEGER NOT NULL DEFAULT 0,
+    read_layer TEXT NOT NULL DEFAULT 'evidence'
 );
 CREATE TABLE IF NOT EXISTS kb_work_type (
     work_type TEXT PRIMARY KEY,
@@ -78,12 +79,36 @@ CREATE TABLE IF NOT EXISTS kb_story_record (
     chapter_index INTEGER,
     category TEXT NOT NULL,
     payload_json TEXT NOT NULL,
+    entry_key TEXT,
+    layer TEXT NOT NULL DEFAULT 'evidence',
+    module TEXT,
+    info_type TEXT,
+    origin TEXT,
+    revision INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_kb_story_record_work_chapter
 ON kb_story_record(work_id, chapter_index);
 CREATE INDEX IF NOT EXISTS ix_kb_story_record_scope
 ON kb_story_record(work_id, category, chapter_index);
+CREATE INDEX IF NOT EXISTS ix_kb_story_record_layer
+ON kb_story_record(work_id, layer, status, chapter_index);
+CREATE TABLE IF NOT EXISTS kb_archive_change (
+    id TEXT PRIMARY KEY,
+    work_id TEXT NOT NULL,
+    chapter_index INTEGER,
+    entry_key TEXT NOT NULL,
+    op TEXT NOT NULL,
+    module TEXT,
+    info_type TEXT,
+    before_json TEXT,
+    after_json TEXT,
+    evidence TEXT,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_kb_archive_change_work_chapter
+ON kb_archive_change(work_id, chapter_index);
 CREATE TABLE IF NOT EXISTS kb_document (
     id TEXT PRIMARY KEY,
     work_id TEXT NOT NULL,
@@ -164,6 +189,29 @@ def ensure_schema(db: Any) -> None:
             connection.execute(
                 "ALTER TABLE kb_work_profile ADD COLUMN allow_debt INTEGER NOT NULL DEFAULT 0"
             )
+        if "read_layer" not in columns:
+            connection.execute(
+                "ALTER TABLE kb_work_profile ADD COLUMN read_layer TEXT NOT NULL DEFAULT 'evidence'"
+            )
+        story_columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(kb_story_record)")
+        }
+        for name, ddl in (
+            ("entry_key", "TEXT"),
+            ("layer", "TEXT NOT NULL DEFAULT 'evidence'"),
+            ("module", "TEXT"),
+            ("info_type", "TEXT"),
+            ("origin", "TEXT"),
+            ("revision", "INTEGER NOT NULL DEFAULT 1"),
+            ("status", "TEXT NOT NULL DEFAULT 'active'"),
+        ):
+            if name not in story_columns:
+                connection.execute(f"ALTER TABLE kb_story_record ADD COLUMN {name} {ddl}")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_kb_story_record_canonical "
+            "ON kb_story_record(work_id, entry_key) "
+            "WHERE layer='canonical' AND entry_key IS NOT NULL"
+        )
         document_columns = {
             str(row[1]) for row in connection.execute("PRAGMA table_info(kb_document)")
         }
@@ -288,6 +336,7 @@ def set_work_profile(
     archive_modules: list[dict] | None = None,
     glossary: list[dict] | None = None,
     allow_debt: bool | None = None,
+    read_layer: str | None = None,
 ) -> dict:
     existing = get_work_profile(db, work_id)
     if work_type is None:
@@ -316,6 +365,10 @@ def set_work_profile(
         glossary = existing.get("glossary") or []
     if allow_debt is None:
         allow_debt = bool(existing.get("allow_debt"))
+    if read_layer is None:
+        read_layer = str(existing.get("read_layer") or "evidence")
+    if read_layer not in {"evidence", "canonical"}:
+        raise ValueError("read_layer must be evidence or canonical")
 
     def clean(values: list[str]) -> list[str]:
         return list(dict.fromkeys(
@@ -328,9 +381,9 @@ def set_work_profile(
             INSERT INTO kb_work_profile(
                 work_id, work_type, genre, world_summary, protagonist_name,
                 resource_units_json, entity_types_json, story_categories_json,
-                archive_modules_json, glossary_json, allow_debt
+                archive_modules_json, glossary_json, allow_debt, read_layer
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(work_id) DO UPDATE SET
                 work_type=excluded.work_type, genre=excluded.genre,
                 world_summary=excluded.world_summary,
@@ -340,7 +393,8 @@ def set_work_profile(
                 story_categories_json=excluded.story_categories_json,
                 archive_modules_json=excluded.archive_modules_json,
                 glossary_json=excluded.glossary_json,
-                allow_debt=excluded.allow_debt
+                allow_debt=excluded.allow_debt,
+                read_layer=excluded.read_layer
             """,
             (
                 work_id, work_type, genre, world_summary, protagonist_name,
@@ -349,7 +403,7 @@ def set_work_profile(
                 json.dumps(clean(story_categories), ensure_ascii=False),
                 json.dumps(_clean_modules(archive_modules), ensure_ascii=False),
                 json.dumps(_clean_glossary(glossary), ensure_ascii=False),
-                1 if allow_debt else 0,
+                1 if allow_debt else 0, read_layer,
             ),
         )
     return get_work_profile(db, work_id)
@@ -369,6 +423,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
             "archive_modules": [dict(module) for module in DEFAULT_ARCHIVE_MODULES],
             "glossary": [],
             "allow_debt": DEFAULT_ALLOW_DEBT,
+            "read_layer": "evidence",
         }
     profile = dict(row)
     profile["resource_units"] = json.loads(profile.pop("resource_units_json", "[]") or "[]")
@@ -382,6 +437,7 @@ def get_work_profile(db: Any, work_id: str) -> dict:
     )
     profile["glossary"] = json.loads(profile.pop("glossary_json", "[]") or "[]")
     profile["allow_debt"] = bool(profile.pop("allow_debt", 0))
+    profile["read_layer"] = str(profile.get("read_layer") or "evidence")
     return profile
 
 
@@ -747,6 +803,12 @@ def _story_record_key(
 def add_story_record(
     db: Any, work_id: str, category: str, payload: dict,
     *, chapter_index: int | None = None,
+    entry_key: str | None = None,
+    layer: str = "evidence",
+    module: str | None = None,
+    info_type: str | None = None,
+    origin: str | None = None,
+    status: str = "active",
 ) -> dict:
     record_id = uuid.uuid4().hex
     key = _story_record_key(category, payload, chapter_index)
@@ -754,9 +816,9 @@ def add_story_record(
         rows = connection.execute(
             """
             SELECT id, payload_json, chapter_index FROM kb_story_record
-            WHERE work_id=? AND category=?
+            WHERE work_id=? AND category=? AND layer=?
             """,
-            (work_id, category),
+            (work_id, category, layer),
         ).fetchall()
         for row in rows:
             if _story_record_key(
@@ -765,17 +827,27 @@ def add_story_record(
             ) == key:
                 return {
                     "id": row["id"], "category": category,
-                    "chapter_index": row["chapter_index"], "deduped": True,
+                    "chapter_index": row["chapter_index"],
+                    "deduped": True, "layer": layer,
                 }
         connection.execute(
             """
-            INSERT INTO kb_story_record(id, work_id, chapter_index, category, payload_json, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO kb_story_record(
+                id, work_id, chapter_index, category, payload_json,
+                entry_key, layer, module, info_type, origin, revision, status,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (record_id, work_id, chapter_index, category,
-             json.dumps(payload, ensure_ascii=False), _now()),
+            (
+                record_id, work_id, chapter_index, category,
+                json.dumps(payload, ensure_ascii=False),
+                entry_key, layer, module, info_type, origin, 1, status, _now(),
+            ),
         )
-    return {"id": record_id, "category": category, "chapter_index": chapter_index}
+    return {
+        "id": record_id, "category": category,
+        "chapter_index": chapter_index, "entry_key": entry_key, "layer": layer,
+    }
 
 
 def drop_legacy_chapter_records(db: Any, work_id: str) -> dict:
@@ -798,6 +870,7 @@ def drop_legacy_chapter_records(db: Any, work_id: str) -> dict:
                 """
                 DELETE FROM kb_story_record
                 WHERE work_id=? AND chapter_index=?
+                  AND layer='evidence'
                   AND category IN ('scene','cognition','thread','state_delta')
                   AND json_extract(payload_json, '$.source_document_id') IS NULL
                 """,
@@ -812,7 +885,7 @@ def dedupe_story_records(db: Any, work_id: str) -> dict:
         rows = connection.execute(
             """
             SELECT id, category, chapter_index, payload_json
-            FROM kb_story_record WHERE work_id=?
+            FROM kb_story_record WHERE work_id=? AND layer='evidence'
             ORDER BY
                 (json_extract(payload_json, '$.source_document_id') IS NULL),
                 chapter_index IS NULL, chapter_index, created_at, id
@@ -838,6 +911,431 @@ def dedupe_story_records(db: Any, work_id: str) -> dict:
     return {"removed": removed, "kept": len(rows) - removed}
 
 
+def canonical_entry_key(subject: str, predicate: str) -> str:
+    return f"{str(subject).strip()}:{str(predicate).strip()}"
+
+
+def apply_archive_changes(
+    db: Any, work_id: str, chapter_index: int, changes: list[dict],
+    *, origin: str = "archive_update",
+    state_deltas: list[dict] | None = None,
+) -> dict:
+    """Apply canonical diff entries and keep an audit log."""
+    applied = 0
+    archived = 0
+    deleted = 0
+    with db.transaction() as connection:
+        for change in changes:
+            if not isinstance(change, dict):
+                raise ValueError("change must be an object")
+            module = str(change.get("module") or "").strip()
+            subject = str(change.get("subject") or "").strip()
+            predicate = str(change.get("predicate") or "").strip()
+            entry_key = str(change.get("entry_key") or "").strip()
+            source_delta = change.get("source_delta")
+            if source_delta is not None and state_deltas is not None:
+                try:
+                    delta = state_deltas[int(source_delta)]
+                except (ValueError, IndexError, TypeError) as exc:
+                    raise ValueError(f"invalid source_delta: {source_delta}") from exc
+                if not isinstance(delta, dict):
+                    raise ValueError(f"source_delta {source_delta} is not an object")
+                subject = str(delta.get("entity") or delta.get("subject") or "").strip()
+                predicate = str(
+                    delta.get("field") or delta.get("item")
+                    or delta.get("creditor") or delta.get("target") or ""
+                ).strip()
+                if not (subject and predicate):
+                    raise ValueError(f"source_delta {source_delta} has no entity/field")
+                entry_key = canonical_entry_key(subject, predicate)
+            if not entry_key:
+                if not (module and subject and predicate):
+                    raise ValueError("entry_key or module/subject/predicate is required")
+                entry_key = canonical_entry_key(subject, predicate)
+            if not subject and not predicate and ":" in entry_key:
+                subject, predicate = entry_key.split(":", 1)
+            op = str(change.get("op") or "upsert")
+            if op not in {"upsert", "archive", "delete"}:
+                raise ValueError(f"unsupported op: {op}")
+            info_type = str(change.get("info_type") or "history")
+            payload = change.get("payload")
+            if not isinstance(payload, dict):
+                payload = {
+                    key: change[key]
+                    for key in ("subject", "predicate", "value", "evidence", "status")
+                    if key in change
+                }
+            payload.setdefault("subject", subject)
+            payload.setdefault("predicate", predicate)
+            if source_delta is not None and state_deltas is not None:
+                delta = state_deltas[int(source_delta)]
+                payload.setdefault("value", delta.get("to"))
+                payload.setdefault("evidence", delta.get("evidence"))
+            evidence = str(change.get("evidence") or payload.get("evidence") or "")
+            row = connection.execute(
+                """
+                SELECT * FROM kb_story_record
+                WHERE work_id=? AND layer='canonical' AND entry_key=?
+                """,
+                (work_id, entry_key),
+            ).fetchone()
+            before = json.loads(row["payload_json"]) if row else None
+            if row and row["chapter_index"] is not None and chapter_index < row["chapter_index"]:
+                raise ValueError(
+                    f"stale change for {entry_key}: {chapter_index} < {row['chapter_index']}"
+                )
+            after = None
+            if op == "delete":
+                if row is not None:
+                    connection.execute("DELETE FROM kb_story_record WHERE id=?", (row["id"],))
+                deleted += int(row is not None)
+            elif op == "archive":
+                if row is not None:
+                    archived_payload = {**(before or {}), "status": "archived"}
+                    connection.execute(
+                        """
+                        UPDATE kb_story_record
+                        SET payload_json=?, chapter_index=?, revision=revision+1,
+                            status='archived', origin=?
+                        WHERE id=?
+                        """,
+                        (
+                            json.dumps(archived_payload, ensure_ascii=False),
+                            chapter_index, origin, row["id"],
+                        ),
+                    )
+                    after = archived_payload
+                    archived += 1
+            else:
+                category = str(
+                    change.get("category") or (row["category"] if row else "fact")
+                )
+                if row is None:
+                    connection.execute(
+                        """
+                        INSERT INTO kb_story_record(
+                            id, work_id, chapter_index, category, payload_json,
+                            entry_key, layer, module, info_type, origin,
+                            revision, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, 'canonical', ?, ?, ?, 1, 'active', ?)
+                        """,
+                        (
+                            uuid.uuid4().hex, work_id, chapter_index, category,
+                            json.dumps(payload, ensure_ascii=False), entry_key,
+                            module or None, info_type, origin, _now(),
+                        ),
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE kb_story_record
+                        SET payload_json=?, chapter_index=?, category=?, module=?,
+                            info_type=?, origin=?, revision=revision+1, status='active'
+                        WHERE id=?
+                        """,
+                        (
+                            json.dumps(payload, ensure_ascii=False), chapter_index,
+                            category, module or None, info_type, origin, row["id"],
+                        ),
+                    )
+                after = payload
+                applied += 1
+            connection.execute(
+                """
+                INSERT INTO kb_archive_change(
+                    id, work_id, chapter_index, entry_key, op, module,
+                    info_type, before_json, after_json, evidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    uuid.uuid4().hex, work_id, chapter_index, entry_key, op,
+                    module or None, info_type,
+                    json.dumps(before, ensure_ascii=False) if before is not None else None,
+                    json.dumps(after, ensure_ascii=False) if after is not None else None,
+                    evidence, _now(),
+                ),
+            )
+    return {"applied": applied, "archived": archived, "deleted": deleted}
+
+
+def list_archive_changes(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+) -> list[dict]:
+    query = "SELECT * FROM kb_archive_change WHERE work_id=?"
+    params: list[Any] = [work_id]
+    if chapter_index is not None:
+        query += " AND chapter_index=?"
+        params.append(chapter_index)
+    query += " ORDER BY created_at, id"
+    with db.connection() as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "id": row["id"],
+            "chapter_index": row["chapter_index"],
+            "entry_key": row["entry_key"],
+            "op": row["op"],
+            "module": row["module"],
+            "info_type": row["info_type"],
+            "before": json.loads(row["before_json"]) if row["before_json"] else None,
+            "after": json.loads(row["after_json"]) if row["after_json"] else None,
+            "evidence": row["evidence"],
+        }
+        for row in rows
+    ]
+
+
+def _canonical_entries_from_changes(
+    db: Any, work_id: str, at_chapter: int,
+) -> list[dict]:
+    with db.connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM kb_archive_change
+            WHERE work_id=? AND chapter_index<=?
+            ORDER BY chapter_index, created_at, rowid
+            """,
+            (work_id, at_chapter),
+        ).fetchall()
+    state: dict[str, dict] = {}
+    for row in rows:
+        key = str(row["entry_key"] or "")
+        if not key:
+            continue
+        op = str(row["op"] or "upsert")
+        if op in {"archive", "delete"}:
+            state.pop(key, None)
+            continue
+        payload = json.loads(row["after_json"] or "{}")
+        if not payload.get("subject") and ":" in key:
+            payload["subject"], payload["predicate"] = key.split(":", 1)
+        state[key] = {
+            "id": row["id"],
+            "category": "fact",
+            "chapter_index": row["chapter_index"],
+            "payload": payload,
+            "entry_key": key,
+            "layer": "canonical",
+            "module": row["module"],
+            "info_type": row["info_type"],
+            "origin": "archive_update",
+            "revision": 1,
+            "status": "active",
+        }
+    return list(state.values())
+
+
+def canonical_entries_for_entity(
+    db: Any, work_id: str, name: str, *, at_chapter: int | None = None,
+) -> list[dict]:
+    entity = get_entity(db, work_id, name)
+    names = {name}
+    if entity:
+        names.add(str(entity.get("canonical_name") or name))
+        names.update(str(alias) for alias in entity.get("aliases") or [])
+    if at_chapter is not None:
+        records = _canonical_entries_from_changes(db, work_id, at_chapter)
+    else:
+        clauses = []
+        params: list[Any] = [work_id]
+        for candidate in names:
+            if not candidate:
+                continue
+            clauses.append("(entry_key LIKE ? OR json_extract(payload_json, '$.subject') LIKE ?)")
+            params.extend([f"%{candidate}%", f"%{candidate}%"])
+        if not clauses:
+            return []
+        with db.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM kb_story_record WHERE work_id=? "
+                "AND layer='canonical' AND status='active' AND ("
+                + " OR ".join(clauses) + ")",
+                params,
+            ).fetchall()
+        records = [
+            {
+                "id": row["id"], "category": row["category"],
+                "chapter_index": row["chapter_index"],
+                "payload": (
+                    json.loads(row["payload_json"])
+                    if json.loads(row["payload_json"]).get("subject")
+                    else {
+                        **json.loads(row["payload_json"]),
+                        "subject": str(row["entry_key"] or "").split(":", 1)[0],
+                        "predicate": (
+                            str(row["entry_key"] or "").split(":", 1)[1]
+                            if ":" in str(row["entry_key"] or "") else ""
+                        ),
+                    }
+                ),
+                "entry_key": row["entry_key"], "layer": row["layer"],
+                "module": row["module"], "info_type": row["info_type"],
+                "origin": row["origin"], "revision": row["revision"],
+                "status": row["status"],
+            }
+            for row in rows
+        ]
+    matched = []
+    for record in records:
+        payload = record["payload"]
+        text = " ".join([
+            str(record.get("entry_key") or ""),
+            str(payload.get("subject") or ""),
+            str(payload.get("entity") or ""),
+            str(payload.get("predicate") or ""),
+        ])
+        if any(candidate and candidate in text for candidate in names):
+            matched.append(record)
+    return matched
+
+
+_CANONICAL_MODULE_PRIORITY = {
+    "五": 5, "四": 4, "八": 3, "七": 2, "二": 2,
+    "三": 1, "六": 1, "九": 1,
+}
+
+
+def find_canonical_duplicates(db: Any, work_id: str) -> list[dict]:
+    records = list_story_records(
+        db, work_id, layer="canonical", status="active",
+    )
+    groups: dict[tuple, list[dict]] = {}
+    for record in records:
+        payload = record["payload"]
+        key = (
+            str(payload.get("subject") or payload.get("entity") or ""),
+            str(payload.get("predicate") or payload.get("field") or ""),
+            str(record.get("info_type") or ""),
+        )
+        if not key[0] or not key[1]:
+            continue
+        groups.setdefault(key, []).append(record)
+    return [
+        {"subject": key[0], "predicate": key[1], "info_type": key[2], "records": items}
+        for key, items in groups.items() if len(items) > 1
+    ]
+
+
+def dedupe_canonical(db: Any, work_id: str) -> dict:
+    archived = 0
+    for group in find_canonical_duplicates(db, work_id):
+        records = group["records"]
+        winner = max(
+            records,
+            key=lambda record: (
+                int(record.get("chapter_index") or 0),
+                _CANONICAL_MODULE_PRIORITY.get(str(record.get("module") or ""), 0),
+                int(record.get("revision") or 0),
+            ),
+        )
+        for record in records:
+            if record["id"] == winner["id"]:
+                continue
+            chapter = max(
+                int(winner.get("chapter_index") or 0),
+                int(record.get("chapter_index") or 0),
+            )
+            result = apply_archive_changes(
+                db, work_id, chapter, [{
+                    "entry_key": record["entry_key"],
+                    "module": record.get("module"),
+                    "info_type": record.get("info_type"),
+                    "op": "archive",
+                    "subject": record["payload"].get("subject"),
+                    "predicate": record["payload"].get("predicate"),
+                }],
+            )
+            archived += result["archived"]
+    return {"archived": archived}
+
+
+def reconcile_chapter(
+    db: Any, work_id: str, chapter_index: int,
+) -> dict:
+    """Compare chapter_memory state deltas with canonical changes."""
+    document = get_document(
+        db, work_id, "chapter_memory", f"chapter:{chapter_index}",
+        status="active",
+    )
+    if document is None:
+        return {
+            "available": False, "chapter_index": chapter_index,
+            "total": 0, "matched": 0, "missing": [], "rate": 0.0,
+        }
+    content = document.get("content") or {}
+    deltas = content.get("state_deltas") if isinstance(content, dict) else []
+    deltas = deltas if isinstance(deltas, list) else []
+    changes = list_archive_changes(
+        db, work_id, chapter_index=chapter_index,
+    )
+    def normalize(value: Any) -> str:
+        return "".join(str(value or "").lower().split())
+
+    missing = []
+    matched = 0
+    exact_matched = 0
+    for delta in deltas:
+        if not isinstance(delta, dict):
+            continue
+        raw_entity = str(delta.get("entity") or delta.get("subject") or "")
+        raw_predicate = str(
+            delta.get("field") or delta.get("item")
+            or delta.get("creditor") or delta.get("target") or ""
+        )
+        exact_key = canonical_entry_key(raw_entity, raw_predicate)
+        exact_hit = next(
+            (change for change in changes
+             if change.get("entry_key") == exact_key),
+            None,
+        )
+        if exact_hit is not None:
+            matched += 1
+            exact_matched += 1
+            continue
+        entity = normalize(delta.get("entity"))
+        tokens: list[str] = []
+        for key in ("item", "field", "creditor", "target", "relation", "goal"):
+            value = normalize(delta.get(key))
+            value = re.sub(r"[（(].*?[）)]", "", value)
+            value = re.sub(
+                r"^(让|使|令|叫|要求|安排|决定|同意|拒绝|阻止|希望|打算)",
+                "", value,
+            )
+            if not value:
+                continue
+            tokens.extend(
+                part for part in re.split(r"[对与的和及、，,。:：/]", value)
+                if len(part) >= 2
+            )
+        tokens = list(dict.fromkeys(tokens))
+        hit = None
+        for change in changes:
+            haystack = normalize(
+                f"{change.get('entry_key', '')} "
+                f"{json.dumps(change.get('after'), ensure_ascii=False)}"
+            )
+            if entity and entity not in haystack:
+                continue
+            if tokens and not any(token in haystack for token in tokens):
+                continue
+            hit = change
+            break
+        if hit is None:
+            missing.append(delta)
+        else:
+            matched += 1
+    total = len([delta for delta in deltas if isinstance(delta, dict)])
+    return {
+        "available": True,
+        "chapter_index": chapter_index,
+        "total": total,
+        "matched": matched,
+        "exact_matched": exact_matched,
+        "missing": missing,
+        "rate": round(matched / total, 3) if total else 1.0,
+    }
+
+
 def purge_work(db: Any, work_id: str) -> dict:
     """Remove archive rows when a work is deleted."""
     deleted = {}
@@ -846,8 +1344,8 @@ def purge_work(db: Any, work_id: str) -> dict:
             "DELETE FROM kb_document_fts WHERE work_id=?", (work_id,),
         ).rowcount
         for table in (
-            "kb_document", "kb_entity_snapshot", "kb_entity", "kb_story_record",
-            "kb_source_meta", "kb_work_profile",
+            "kb_archive_change", "kb_document", "kb_entity_snapshot", "kb_entity",
+            "kb_story_record", "kb_source_meta", "kb_work_profile",
         ):
             deleted[table] = connection.execute(
                 f"DELETE FROM {table} WHERE work_id = ?", (work_id,),
@@ -942,12 +1440,246 @@ def tick_timers(db: Any, work_id: str, chapter_index: int) -> list[dict]:
     return updated
 
 
+def _derived_rows(
+    db: Any, work_id: str, category: str, *,
+    chapter_index: int | None = None, max_chapter: int | None = None,
+    json_path: str | None = None, json_value: str | None = None,
+    participant: str | None = None, limit: int | None = None,
+    offset: int = 0, count: bool = False,
+) -> Any:
+    query = (
+        "SELECT COUNT(*) AS n FROM kb_story_record "
+        if count else "SELECT * FROM kb_story_record "
+    )
+    query += (
+        "WHERE work_id=? AND category=? AND layer='evidence' "
+        "AND status='active' "
+        "AND (json_extract(payload_json, '$.source_document_id') IS NULL "
+        "OR EXISTS (SELECT 1 FROM kb_document AS d "
+        "WHERE d.id=json_extract(kb_story_record.payload_json, "
+        "'$.source_document_id') AND d.status='active' "
+        "AND d.projection_status='done'))"
+    )
+    params: list[Any] = [work_id, category]
+    if chapter_index is not None:
+        query += " AND chapter_index=?"
+        params.append(chapter_index)
+    if max_chapter is not None:
+        query += " AND chapter_index<=?"
+        params.append(max_chapter)
+    if json_path is not None and json_value is not None:
+        query += " AND json_extract(payload_json, ?)=?"
+        params.extend([json_path, json_value])
+    if participant:
+        query += (
+            " AND EXISTS (SELECT 1 FROM json_each("
+            "kb_story_record.payload_json, '$.participants') AS p "
+            "WHERE p.value=?)"
+        )
+        params.append(participant)
+    if count:
+        with db.connection() as connection:
+            return int(connection.execute(query, params).fetchone()["n"])
+    query += " ORDER BY chapter_index, created_at"
+    if limit is not None:
+        query += " LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+    with db.connection() as connection:
+        return connection.execute(query, params).fetchall()
+
+
+def list_scene_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, participant: str | None = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    rows = _derived_rows(
+        db, work_id, "scene", chapter_index=chapter_index,
+        max_chapter=max_chapter, participant=participant,
+        limit=limit, offset=offset,
+    )
+    items = []
+    for row in rows:
+        payload = json.loads(row["payload_json"] or "{}")
+        items.append({
+            "name": payload.get("name"),
+            "chapter": row["chapter_index"],
+            "participants": payload.get("participants") or [],
+            "cause": payload.get("causal_paragraph"),
+            "outcome": payload.get("causal_paragraph"),
+            "evidence": payload.get("evidence"),
+            "source_document_id": payload.get("source_document_id"),
+        })
+    return items
+
+
+def count_scene_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, participant: str | None = None,
+) -> int:
+    return _derived_rows(
+        db, work_id, "scene", chapter_index=chapter_index,
+        max_chapter=max_chapter, participant=participant, count=True,
+    )
+
+
+def list_cognition_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, holder: str | None = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    rows = _derived_rows(
+        db, work_id, "cognition", chapter_index=chapter_index,
+        max_chapter=max_chapter, json_path="$.holder",
+        json_value=holder, limit=limit, offset=offset,
+    )
+    items = []
+    for row in rows:
+        payload = json.loads(row["payload_json"] or "{}")
+        items.append({
+            "holder": payload.get("holder"),
+            "type": payload.get("type"),
+            "content": payload.get("content"),
+            "audience": payload.get("audience") or [],
+            "chapter": row["chapter_index"],
+            "evidence": payload.get("evidence"),
+            "source_document_id": payload.get("source_document_id"),
+        })
+    return items
+
+
+def count_cognition_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, holder: str | None = None,
+) -> int:
+    return _derived_rows(
+        db, work_id, "cognition", chapter_index=chapter_index,
+        max_chapter=max_chapter, json_path="$.holder",
+        json_value=holder, count=True,
+    )
+
+
+def list_thread_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, entity: str | None = None,
+    limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    rows = _derived_rows(
+        db, work_id, "thread", chapter_index=chapter_index,
+        max_chapter=max_chapter, limit=10000,
+    )
+    items = []
+    for row in rows:
+        payload = json.loads(row["payload_json"] or "{}")
+        if entity:
+            text = json.dumps(payload, ensure_ascii=False)
+            if entity not in text:
+                continue
+        items.append({
+            "thread": payload.get("thread"),
+            "transition": payload.get("transition"),
+            "next_condition": payload.get("next_condition"),
+            "chapter": row["chapter_index"],
+            "evidence": payload.get("evidence"),
+            "source_document_id": payload.get("source_document_id"),
+        })
+    return items[offset:offset + limit]
+
+
+def count_thread_records(
+    db: Any, work_id: str, *, chapter_index: int | None = None,
+    max_chapter: int | None = None, entity: str | None = None,
+) -> int:
+    if entity is None:
+        return _derived_rows(
+            db, work_id, "thread", chapter_index=chapter_index,
+            max_chapter=max_chapter, count=True,
+        )
+    return len(list_thread_records(
+        db, work_id, chapter_index=chapter_index,
+        max_chapter=max_chapter, entity=entity, limit=100000,
+    ))
+
+
+def _relation_target(entity: str, field: str) -> str:
+    match = re.match(r"^(?:与|对)(.+?)(?:的|发展|态度|关系|支持|亲近|看法|信任|敌意|$)", field)
+    return match.group(1).strip() if match else ""
+
+
+def list_relation_records(
+    db: Any, work_id: str, *, from_name: str | None = None,
+    to_name: str | None = None, limit: int = 100, offset: int = 0,
+) -> list[dict]:
+    rows = _derived_rows(
+        db, work_id, "state_delta", json_path="$.category",
+        json_value="relation", limit=10000,
+    )
+    items: list[dict] = []
+    seen: set[tuple] = set()
+
+    def add_item(
+        source: str, target: str, relation: str,
+        value: Any, chapter: Any, evidence: Any,
+    ) -> None:
+        if not source or not target or source == target:
+            return
+        if from_name and source != from_name:
+            return
+        if to_name and target != to_name:
+            return
+        key = (source, target, relation, chapter)
+        if key in seen:
+            return
+        seen.add(key)
+        items.append({
+            "from": source, "to": target, "relation": relation,
+            "value": value, "chapter": chapter, "evidence": evidence,
+        })
+
+    for row in rows:
+        payload = json.loads(row["payload_json"] or "{}")
+        source = str(payload.get("entity") or "").strip()
+        field = str(payload.get("field") or "").strip()
+        target = _relation_target(source, field)
+        if target:
+            relation = field.replace(target, "", 1).strip("与对的 ")
+            add_item(
+                source, target, relation or field,
+                payload.get("to") or payload.get("value"),
+                row["chapter_index"], payload.get("evidence"),
+            )
+
+    for record in list_story_records(
+        db, work_id, layer="canonical", status="active",
+    ):
+        payload = record["payload"]
+        source = str(payload.get("subject") or "").strip()
+        field = str(payload.get("predicate") or "").strip()
+        target = _relation_target(source, field)
+        if not target or target == source:
+            continue
+        relation = field.replace(target, "", 1).strip("与对的 ")
+        add_item(
+            source, target, relation or field,
+            payload.get("value"), record.get("chapter_index"),
+            payload.get("evidence"),
+        )
+    return items[offset:offset + limit]
+
+
 def list_story_records(
     db: Any, work_id: str, *, category: str | None = None,
     at_chapter: int | None = None, only_projected: bool = False,
+    layer: str | None = None, status: str | None = None,
 ) -> list[dict]:
     query = "SELECT * FROM kb_story_record WHERE work_id=?"
     params: list[Any] = [work_id]
+    if layer:
+        query += " AND layer=?"
+        params.append(layer)
+    if status:
+        query += " AND status=?"
+        params.append(status)
     if category:
         query += " AND category=?"
         params.append(category)
@@ -970,8 +1702,18 @@ def list_story_records(
     with db.connection() as connection:
         rows = connection.execute(query, params).fetchall()
     return [
-        {"id": row["id"], "category": row["category"], "chapter_index": row["chapter_index"],
-         "payload": json.loads(row["payload_json"])}
+        {
+            "id": row["id"], "category": row["category"],
+            "chapter_index": row["chapter_index"],
+            "payload": json.loads(row["payload_json"]),
+            "entry_key": row["entry_key"],
+            "layer": row["layer"],
+            "module": row["module"],
+            "info_type": row["info_type"],
+            "origin": row["origin"],
+            "revision": row["revision"],
+            "status": row["status"],
+        }
         for row in rows
     ]
 

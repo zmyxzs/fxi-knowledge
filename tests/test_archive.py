@@ -269,6 +269,15 @@ def test_reserve_source_meta_rejects_duplicate_chapter(tmp_path) -> None:
     db.close()
 
 
+def test_work_profile_read_layer_roundtrip(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.set_work_profile(db, "w1", read_layer="canonical")
+    assert archive.get_work_profile(db, "w1")["read_layer"] == "canonical"
+    with pytest.raises(ValueError, match="read_layer"):
+        archive.set_work_profile(db, "w1", read_layer="bad")
+    db.close()
+
+
 def test_work_profile_glossary_roundtrip(tmp_path) -> None:
     db = _db(tmp_path)
     glossary = [
@@ -793,6 +802,54 @@ def _archive_update_output() -> dict:
     }
 
 
+def test_archive_update_skips_malformed_changes(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = _archive_update_output()
+    output["changes"] = [
+        {
+            "entry_key": "伏笔:测试", "module": "八",
+            "info_type": "history", "op": "upsert", "value": "未回收",
+        },
+        {"module": "五", "info_type": "dynamic", "op": "upsert", "value": "缺字段"},
+    ]
+    result = archive_extraction.apply_archive_update(
+        db, "w1", output, source_chapters=[1],
+    )
+    assert result["valid"] is True
+    assert result["changes_applied"]["applied"] == 1
+    assert result["changes_applied"]["skipped"] == 1
+    assert any("已跳过" in warning for warning in result["warnings"])
+    db.close()
+
+
+def test_archive_update_skips_out_of_range_source_delta(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = _archive_update_output()
+    output["changes"] = [
+        {"source_delta": 0, "module": "五", "info_type": "dynamic",
+         "op": "upsert", "value": "越界"},
+        {"entry_key": "伏笔:测试", "module": "八", "info_type": "history",
+         "op": "upsert", "value": "未回收"},
+    ]
+    result = archive_extraction.apply_archive_update(
+        db, "w1", output, source_chapters=[1],
+    )
+    assert result["valid"] is True
+    assert result["changes_applied"]["applied"] == 1
+    assert result["changes_applied"]["skipped"] == 1
+    assert any("越界" in warning for warning in result["warnings"])
+    db.close()
+
+
+def test_parse_archive_update_output_ignores_trailing_text() -> None:
+    output = _archive_update_output()
+    parsed = archive_extraction.parse_archive_update_output(
+        json.dumps(output, ensure_ascii=False) + "\n额外说明"
+    )
+    assert parsed["draft"] == output["draft"]
+    assert parsed["archive"] == output["archive"]
+
+
 def test_archive_update_versions_and_validation(tmp_path) -> None:
     db = _db(tmp_path)
     first = archive_extraction.apply_archive_update(
@@ -816,9 +873,273 @@ def test_archive_update_versions_and_validation(tmp_path) -> None:
     result = archive_extraction.apply_archive_update(
         db, "w1", invalid, source_chapters=[3],
     )
-    assert result["valid"] is False
-    assert result["document"]["status"] == "draft"
-    assert any("缺少模块" in issue for issue in result["issues"])
+    assert result["valid"] is True
+    assert result["document"]["status"] == "active"
+    assert any("缺少模块" in warning for warning in result["warnings"])
+    db.close()
+
+
+def test_canonical_entity_as_of_chapter(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "entry_key": "唐三:境界", "module": "五", "info_type": "dynamic",
+        "subject": "唐三", "predicate": "境界", "value": "第一重",
+    }])
+    archive.apply_archive_changes(db, "w1", 2, [{
+        "entry_key": "唐三:境界", "module": "五", "info_type": "dynamic",
+        "subject": "唐三", "predicate": "境界", "value": "第二重",
+    }])
+    at_one = archive.canonical_entries_for_entity(
+        db, "w1", "唐三", at_chapter=1,
+    )
+    at_two = archive.canonical_entries_for_entity(
+        db, "w1", "唐三", at_chapter=2,
+    )
+    assert at_one[0]["payload"]["value"] == "第一重"
+    assert at_two[0]["payload"]["value"] == "第二重"
+    db.close()
+
+
+def test_relation_records_include_canonical_predicates(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.apply_archive_changes(db, "w1", 2, [{
+        "entry_key": "唐昊:与唐三的父子亲近",
+        "module": "五",
+        "info_type": "dynamic",
+        "subject": "唐昊",
+        "predicate": "与唐三的父子亲近",
+        "value": "亲近",
+    }])
+    relation = archive.list_relation_records(
+        db, "w1", from_name="唐昊", to_name="唐三",
+    )[0]
+    assert relation["relation"] == "父子亲近"
+    assert relation["value"] == "亲近"
+    db.close()
+
+
+def test_derived_query_records(tmp_path) -> None:
+    db = _db(tmp_path)
+    document = archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"scenes": [], "cognition": [], "unresolved": [], "state_deltas": []},
+        markdown="memory", source_chapters=[1], status="active",
+        projection_status="done",
+    )
+    source = {"source_document_id": document["id"]}
+    archive.add_story_record(
+        db, "w1", "scene",
+        {"name": "一万锤", "participants": ["唐三", "唐昊"],
+         "causal_paragraph": "唐昊要求唐三锻造", "evidence": "一万锤", **source},
+        chapter_index=1,
+    )
+    archive.add_story_record(
+        db, "w1", "cognition",
+        {"holder": "唐三", "type": "judgment", "content": "唐昊不知道玄玉手",
+         "audience": ["唐三"], "evidence": "不知道", **source},
+        chapter_index=1,
+    )
+    archive.add_story_record(
+        db, "w1", "state_delta",
+        {"entity": "唐昊", "category": "relation", "field": "与唐三的父子亲近",
+         "to": "亲近", "evidence": "拥抱", **source},
+        chapter_index=1,
+    )
+    assert archive.list_scene_records(db, "w1", participant="唐三")[0]["name"] == "一万锤"
+    assert archive.list_cognition_records(db, "w1", holder="唐三")[0]["content"] == "唐昊不知道玄玉手"
+    relation = archive.list_relation_records(db, "w1", from_name="唐昊", to_name="唐三")[0]
+    assert relation["relation"] == "父子亲近"
+    assert relation["value"] == "亲近"
+    db.close()
+
+
+def test_apply_archive_changes_derives_subject_from_entry_key(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "entry_key": "伏笔:山羊头身份",
+        "module": "八",
+        "info_type": "history",
+        "op": "upsert",
+        "value": "未知",
+    }])
+    record = archive.list_story_records(db, "w1", layer="canonical")[0]
+    assert record["payload"]["subject"] == "伏笔"
+    assert record["payload"]["predicate"] == "山羊头身份"
+    db.close()
+
+
+def test_apply_archive_changes_uses_key_without_module(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "module": "五",
+        "info_type": "dynamic",
+        "subject": "唐三",
+        "predicate": "境界",
+        "value": "第一重",
+    }])
+    records = archive.list_story_records(db, "w1", layer="canonical")
+    assert records[0]["entry_key"] == "唐三:境界"
+    db.close()
+
+
+def test_dedupe_canonical_prefers_higher_priority_module(tmp_path) -> None:
+    db = _db(tmp_path)
+    for module in ("四", "五"):
+        archive.apply_archive_changes(db, "w1", 1, [{
+            "entry_key": f"{module}:唐三:位置",
+            "module": module,
+            "info_type": "dynamic",
+            "subject": "唐三",
+            "predicate": "位置",
+            "value": "圣魂村",
+        }])
+    duplicates = archive.find_canonical_duplicates(db, "w1")
+    assert len(duplicates) == 1
+    result = archive.dedupe_canonical(db, "w1")
+    assert result["archived"] == 1
+    active = archive.list_story_records(
+        db, "w1", layer="canonical", status="active",
+    )
+    assert len(active) == 1
+    assert active[0]["module"] == "五"
+    db.close()
+
+
+def test_reconcile_exact_source_delta_key(tmp_path) -> None:
+    db = _db(tmp_path)
+    deltas = [{
+        "entity": "唐三", "category": "goal",
+        "field": "获取魂环试验玄天功", "to": "决定得到",
+    }]
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"state_deltas": deltas}, status="active",
+    )
+    archive.apply_archive_changes(
+        db, "w1", 1,
+        [{"source_delta": 0, "module": "五", "info_type": "dynamic",
+          "value": "决定得到"}],
+        state_deltas=deltas,
+    )
+    result = archive.reconcile_chapter(db, "w1", 1)
+    assert result["matched"] == 1
+    assert result["exact_matched"] == 1
+    assert archive.list_story_records(db, "w1", layer="canonical")[0]["entry_key"] == (
+        "唐三:获取魂环试验玄天功"
+    )
+    db.close()
+
+
+def test_reconcile_chapter_matches_canonical_changes(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"state_deltas": [{
+            "entity": "杨凌", "category": "item",
+            "item": "灵剑", "quantity": 1,
+        }]},
+        status="active",
+    )
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "entry_key": "五:杨凌:灵剑",
+        "module": "五",
+        "info_type": "dynamic",
+        "subject": "杨凌",
+        "predicate": "灵剑",
+        "value": 1,
+    }])
+    result = archive.reconcile_chapter(db, "w1", 1)
+    assert result["available"] is True
+    assert result["total"] == 1
+    assert result["matched"] == 1
+    assert result["rate"] == 1.0
+    db.close()
+
+
+def test_reconcile_matches_relation_terms(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"state_deltas": [{
+            "entity": "五哥", "category": "relation",
+            "field": "五哥对杨凌的态度",
+        }]},
+        status="active",
+    )
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "entry_key": "四:五哥:杨凌:态度",
+        "module": "四",
+        "info_type": "history",
+        "subject": "五哥",
+        "predicate": "态度",
+        "value": "敌意",
+    }])
+    result = archive.reconcile_chapter(db, "w1", 1)
+    assert result["matched"] == 1
+    db.close()
+
+
+def test_reconcile_strips_goal_prefix(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"state_deltas": [{
+            "entity": "唐昊", "category": "goal",
+            "field": "让唐三参加觉醒仪式",
+        }]},
+        status="active",
+    )
+    archive.apply_archive_changes(db, "w1", 1, [{
+        "entry_key": "五:唐昊:对唐三参加觉醒仪式的态度",
+        "module": "五",
+        "info_type": "dynamic",
+        "subject": "唐昊",
+        "predicate": "对唐三参加觉醒仪式的态度",
+        "value": "同意",
+    }])
+    result = archive.reconcile_chapter(db, "w1", 1)
+    assert result["matched"] == 1
+    db.close()
+
+
+def test_reconcile_chapter_reports_missing(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.save_document(
+        db, "w1", "chapter_memory", "chapter:1",
+        {"state_deltas": [{
+            "entity": "杨凌", "category": "item",
+            "item": "灵剑", "quantity": 1,
+        }]},
+        status="active",
+    )
+    result = archive.reconcile_chapter(db, "w1", 1)
+    assert result["matched"] == 0
+    assert len(result["missing"]) == 1
+    db.close()
+
+
+def test_archive_update_applies_canonical_changes(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = _archive_update_output()
+    output["changes"] = [{
+        "entry_key": "五:唐三:境界",
+        "module": "五",
+        "info_type": "dynamic",
+        "op": "upsert",
+        "subject": "唐三",
+        "predicate": "境界",
+        "value": "第一重",
+        "evidence": "突破第一重",
+    }]
+    result = archive_extraction.apply_archive_update(
+        db, "w1", output, source_chapters=[1], previous_archive="（无原档案）",
+    )
+    assert result["valid"] is True
+    assert result["changes_applied"]["applied"] == 1
+    records = archive.list_story_records(db, "w1", layer="canonical")
+    assert len(records) == 1
+    assert records[0]["entry_key"] == "五:唐三:境界"
+    assert records[0]["payload"]["value"] == "第一重"
     db.close()
 
 
@@ -1128,6 +1449,67 @@ def test_dedupe_prefers_artifact_projection(tmp_path) -> None:
     assert result["removed"] == 1
     records = archive.list_story_records(db, "w1", category="scene")
     assert records[0]["payload"].get("source_document_id") == "doc"
+    db.close()
+
+
+def test_apply_archive_changes_upsert_archive_delete(tmp_path) -> None:
+    db = _db(tmp_path)
+    change = {
+        "entry_key": "character:唐三:境界",
+        "module": "五",
+        "info_type": "dynamic",
+        "op": "upsert",
+        "subject": "唐三",
+        "predicate": "境界",
+        "value": "第一重",
+        "evidence": "突破第一重",
+    }
+    first = archive.apply_archive_changes(db, "w1", 1, [change])
+    assert first["applied"] == 1
+    records = archive.list_story_records(db, "w1", layer="canonical")
+    assert len(records) == 1
+    assert records[0]["payload"]["value"] == "第一重"
+
+    archive.apply_archive_changes(
+        db, "w1", 2, [{**change, "value": "第二重"}],
+    )
+    records = archive.list_story_records(db, "w1", layer="canonical")
+    assert len(records) == 1
+    assert records[0]["payload"]["value"] == "第二重"
+
+    archive.apply_archive_changes(
+        db, "w1", 3, [{**change, "op": "archive"}],
+    )
+    with db.connection() as connection:
+        row = connection.execute(
+            "SELECT status, revision FROM kb_story_record WHERE layer='canonical'"
+        ).fetchone()
+    assert row["status"] == "archived"
+    assert row["revision"] == 3
+
+    archive.apply_archive_changes(
+        db, "w1", 4, [{**change, "op": "delete"}],
+    )
+    assert archive.list_story_records(db, "w1", layer="canonical") == []
+    changes = archive.list_archive_changes(db, "w1")
+    assert [item["op"] for item in changes] == [
+        "upsert", "upsert", "archive", "delete",
+    ]
+    assert changes[1]["before"]["value"] == "第一重"
+    assert changes[1]["after"]["value"] == "第二重"
+    db.close()
+
+
+def test_apply_archive_changes_rejects_stale_chapter(tmp_path) -> None:
+    db = _db(tmp_path)
+    change = {
+        "entry_key": "character:唐三:境界", "module": "五",
+        "info_type": "dynamic", "subject": "唐三",
+        "predicate": "境界", "value": "第二重",
+    }
+    archive.apply_archive_changes(db, "w1", 2, [change])
+    with pytest.raises(ValueError, match="stale change"):
+        archive.apply_archive_changes(db, "w1", 1, [change])
     db.close()
 
 

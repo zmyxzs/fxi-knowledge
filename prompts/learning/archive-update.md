@@ -3,8 +3,20 @@
 输出格式：
 {
   "draft": "【更新判定草稿】的 Markdown，包含三个阶段",
+  "changes": [
+    {
+      "source_delta": 0,
+      "module": "五",
+      "info_type": "dynamic|history|rule",
+      "op": "upsert|archive|delete",
+      "value": "第一重",
+      "evidence": "原文证据"
+    }
+  ],
   "archive": "【长期档案】的完整 Markdown，严格九模块"
 }
+
+changes 只写本章发生变化的条目，不写未变化条目。没有变化时 changes 输出空数组。
 
 ## 一、核心原则
 1. 只认新增正文明确出现的事实；不得脑补、推测、补完作者意图。原文没揭示的伏笔真相写“未知”。
@@ -69,3 +81,20 @@ draft 必须包含：
 - 不得删除原档案中仍然有效的设定、人物、道具、已完结故事线。
 - 不得把新增章节之外的信息写成已发生事实。
 - 只输出 JSON，不要输出 JSON 之外的内容。
+
+## 五、changes 纪律
+1. 只写本章明确改变的状态；未变化条目不写。
+2. 状态变化必须用 `source_delta` 指向 `chapter_memory.state_deltas` 的下标，不要再写 entry_key；非状态变化（规则/历史/世界）才用 `entry_key: 主体:字段`，并且必须同时写 `subject` 和 `predicate`。每个 change 至少要满足其中一种，否则不要输出。
+3. `info_type`：
+   - `rule`：机制规则
+   - `dynamic`：位置、伤势、境界、资产、态度等可覆盖状态
+   - `history`：事件、关系变化、已完结线等追加记录
+4. `op`：
+   - `upsert`：新增或覆盖
+   - `archive`：退场/归档
+   - `delete`：明确删除
+5. 不得用 changes 删除未在本章明确结束的内容。
+6. 同一 entry_key 在本章只能出现一次；冲突时保留最终状态。
+7. evidence 必须是本章原文片段；没有证据的状态变化不要写。
+8. 如果输入包含 `chapter_memory.state_deltas`，changes 必须覆盖其中每一条明确变化；字段名尽量沿用 state_deltas 的 entity/field/item/creditor，便于对账。
+9. 如果 chapter_memory 与正文冲突，以正文为准，并在 draft 第三阶段说明。

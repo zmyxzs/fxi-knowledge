@@ -1204,12 +1204,21 @@ def parse_archive_update_output(text: str) -> dict:
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         cleaned = cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]
-    data = json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        if start < 0:
+            raise
+        data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
     if not isinstance(data, dict):
         raise ValueError("archive update output must be an object")
     for key in ("draft", "archive"):
         if not isinstance(data.get(key), str) or not data[key].strip():
             raise ValueError(f"{key} must be a non-empty string")
+    changes = data.get("changes")
+    if changes is not None and not isinstance(changes, list):
+        raise ValueError("changes must be a list")
     return data
 
 
@@ -1224,29 +1233,104 @@ def validate_archive_update(
     if not archive.strip():
         issues.append("archive 为空")
         return issues
+    changes = output.get("changes")
+    if changes is not None and not isinstance(changes, list):
+        issues.append("changes 必须是数组")
+    return issues
+
+
+def archive_update_warnings(
+    output: dict, previous_archive: str,
+) -> list[str]:
+    warnings: list[str] = []
+    draft = str(output.get("draft") or "")
+    archive = str(output.get("archive") or "")
     for phase in ("第一阶段", "第二阶段", "第三阶段"):
         if phase not in draft:
-            issues.append(f"draft 缺少 {phase}")
+            warnings.append(f"draft 缺少 {phase}")
     normalized = archive.replace(" ", "").replace("\u3000", "")
     missing = [title for title in ARCHIVE_MODULE_TITLES if title not in normalized]
     if missing:
-        issues.append("archive 缺少模块：" + "、".join(missing))
+        warnings.append("archive 缺少模块：" + "、".join(missing))
     if previous_archive and len(archive) < len(previous_archive) * 0.5:
-        issues.append("archive 长度不足原档案一半，可能丢失内容")
+        warnings.append("archive 长度不足原档案一半，可能丢失内容")
     if "创作建议" in archive:
-        issues.append("archive 含创作建议")
-    return issues
+        warnings.append("archive 含创作建议")
+    return warnings
+
+
+def filter_archive_update_changes(
+    changes: list[dict], state_delta_count: int | None = None,
+) -> tuple[list[dict], list[str]]:
+    valid: list[dict] = []
+    warnings: list[str] = []
+    for index, change in enumerate(changes):
+        if not isinstance(change, dict):
+            warnings.append(f"changes[{index}] 不是对象，已跳过")
+            continue
+        if change.get("source_delta") is not None:
+            try:
+                delta_index = int(change["source_delta"])
+            except (TypeError, ValueError):
+                warnings.append(f"changes[{index}] source_delta 非法，已跳过")
+                continue
+            if state_delta_count is not None and not (
+                0 <= delta_index < state_delta_count
+            ):
+                warnings.append(
+                    f"changes[{index}] source_delta={delta_index} 越界，已跳过"
+                )
+                continue
+            valid.append(change)
+            continue
+        entry_key = str(change.get("entry_key") or "").strip()
+        module = str(change.get("module") or "").strip()
+        subject = str(change.get("subject") or "").strip()
+        predicate = str(change.get("predicate") or "").strip()
+        if entry_key or (module and subject and predicate):
+            valid.append(change)
+        else:
+            warnings.append(
+                f"changes[{index}] 缺少 source_delta/entry_key/subject，已跳过"
+            )
+    return valid, warnings
 
 
 def apply_archive_update(
     db: Any, work_id: str, output: dict, *,
     source_chapters: list[int], previous_archive: str = "",
     prompt_name: str = "archive-update",
-    prompt_version: str = "1", model: str | None = None,
+    prompt_version: str = "2", model: str | None = None,
 ) -> dict:
     from . import archive
 
     issues = validate_archive_update(output, previous_archive)
+    warnings = archive_update_warnings(output, previous_archive)
+    changes = output.get("changes") or []
+    chapter_index = max(source_chapters or [0])
+    memory = archive.get_document(
+        db, work_id, "chapter_memory",
+        f"chapter:{chapter_index}", status="active",
+    )
+    state_deltas = (
+        (memory.get("content") or {}).get("state_deltas")
+        if memory else None
+    )
+    state_delta_count = len(state_deltas) if isinstance(state_deltas, list) else 0
+    valid_changes, change_warnings = filter_archive_update_changes(
+        changes, state_delta_count,
+    )
+    warnings.extend(change_warnings)
+    changes_applied = {"applied": 0, "archived": 0, "deleted": 0, "skipped": len(changes) - len(valid_changes)}
+    if not issues and valid_changes:
+        try:
+            changes_applied = archive.apply_archive_changes(
+                db, work_id, chapter_index, valid_changes,
+                state_deltas=state_deltas if isinstance(state_deltas, list) else None,
+            )
+            changes_applied["skipped"] = len(changes) - len(valid_changes)
+        except ValueError as exc:
+            issues.append(f"changes 应用失败：{exc}")
     document = archive.save_document(
         db, work_id, "long_term_archive", "main", output,
         markdown=str(output.get("archive") or ""),
@@ -1256,11 +1340,14 @@ def apply_archive_update(
         prompt_version=prompt_version,
         model=model,
         schema_version=1,
+        warnings=warnings,
     )
     return {
         "valid": not issues,
         "issues": issues,
+        "warnings": warnings,
         "document": document,
+        "changes_applied": changes_applied,
     }
 
 
@@ -1282,6 +1369,7 @@ async def extract_archive_update_with_openai(
             {
                 "chapter_index": chapter.get("chapter_index"),
                 "text": str(chapter.get("text") or "")[:ARCHIVE_UPDATE_MAX_CHAPTER_CHARS],
+                "chapter_memory": chapter.get("chapter_memory"),
             }
             for chapter in chapters
         ],
