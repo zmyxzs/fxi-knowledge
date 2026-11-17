@@ -1337,12 +1337,15 @@ def parse_archive_update_output(text: str) -> dict:
         data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
     if not isinstance(data, dict):
         raise ValueError("archive update output must be an object")
-    for key in ("draft", "archive"):
-        if not isinstance(data.get(key), str) or not data[key].strip():
-            raise ValueError(f"{key} must be a non-empty string")
     changes = data.get("changes")
     if changes is not None and not isinstance(changes, list):
         raise ValueError("changes must be a list")
+    # The archive markdown is a derived artifact: a change list without it is
+    # still usable, so an empty archive alone must not fail the chapter.
+    if not str(data.get("draft") or "").strip() and not (
+        isinstance(changes, list) and changes
+    ):
+        raise ValueError("draft must be a non-empty string")
     return data
 
 
@@ -1352,14 +1355,13 @@ def validate_archive_update(
     issues: list[str] = []
     draft = str(output.get("draft") or "")
     archive = str(output.get("archive") or "")
-    if not draft.strip():
-        issues.append("draft 为空")
-    if not archive.strip():
-        issues.append("archive 为空")
-        return issues
     changes = output.get("changes")
+    if not draft.strip() and not (isinstance(changes, list) and changes):
+        issues.append("draft 为空")
     if changes is not None and not isinstance(changes, list):
         issues.append("changes 必须是数组")
+    if not archive.strip() and not (isinstance(changes, list) and changes):
+        issues.append("archive 为空")
     return issues
 
 
@@ -1374,10 +1376,12 @@ def archive_update_warnings(
             warnings.append(f"draft 缺少 {phase}")
     normalized = archive.replace(" ", "").replace("\u3000", "")
     missing = [title for title in ARCHIVE_MODULE_TITLES if title not in normalized]
-    if missing:
+    if missing and archive.strip():
         warnings.append("archive 缺少模块：" + "、".join(missing))
-    if previous_archive and len(archive) < len(previous_archive) * 0.5:
+    if previous_archive and archive.strip() and len(archive) < len(previous_archive) * 0.5:
         warnings.append("archive 长度不足原档案一半，可能丢失内容")
+    if not archive.strip():
+        warnings.append("archive 为空，沿用上一版档案 markdown")
     if "创作建议" in archive:
         warnings.append("archive 含创作建议")
     return warnings
@@ -1475,7 +1479,7 @@ def apply_archive_update(
             issues.append(f"changes 应用失败：{exc}")
     document = archive.save_document(
         db, work_id, "long_term_archive", "main", output,
-        markdown=str(output.get("archive") or ""),
+        markdown=str(output.get("archive") or "") or previous_archive,
         source_chapters=source_chapters,
         status="active" if not issues else "draft",
         prompt_name=prompt_name,

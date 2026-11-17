@@ -584,7 +584,7 @@ FXI_KB_LLM_REASONING_EFFORT=none
 # FXI_KB_LLM_MAX_OUTPUT_TOKENS=8000
 ```
 
-`FXI_KB_MEMORY_CONCURRENCY` 只影响 `chapter_memory` 的模型调用并发（1–8，默认 4），数据库写入仍按章节顺序串行；`FXI_KB_MEMORY_RETRIES` 是单章传输层失败（429/5xx/超时）的重试次数（0–5，默认 2），退避 1s、2s。
+`FXI_KB_MEMORY_CONCURRENCY` 只影响 `chapter_memory` 的模型调用并发（1–8，默认 2），数据库写入仍按章节顺序串行。**默认 2 是因为上游网关账号池只允许 2 路并发**，第 3 个请求起返回 `503 no_healthy_account`；实测并发 2 让 10 章从 99.1s 降到 66.4s，再往上调只换来一半 503。`FXI_KB_MEMORY_RETRIES` 是单章传输层失败（429/5xx/超时）的重试次数（0–5，默认 2），退避 1s、2s；`archive_update` 阶段同样按这个次数重试。
 
 `FXI_KB_LLM_REASONING_EFFORT`（`none` / `low` / `medium` / `high`，默认 `none`）是**耗时最大的开关**：实测推理 token 占完成 token 的 77–81%，关掉后同章同 prompt 快 3–10 倍（见 `kb-optimization-plan.md` §22）。给 `FXI_KB_LLM_MAX_OUTPUT_TOKENS` 设上限时注意：推理开着的时候上限会被推理 token 吃光导致正文为空，所以代码在 `reasoning_effort≠none` 时会忽略这个上限。
 
@@ -654,8 +654,9 @@ sqlite3 ~/fxi-bench/data/bench-db.sqlite3 ".backup /tmp/kg-$(date +%F).sqlite3"
 3. 拆书检索是字面匹配，不是向量语义检索
 4. 解析任务状态存 `parse_jobs.json`，仅保留最近 100 条
 5. 默认解析并发 1，2C/2G 机器不建议调高
-6. `chapter_memory` 并发只省模型等待时间，SQLite 写入仍串行，吞吐上限受单章最长调用限制
-7. `archive_update` 仍按章串行且每章重写整本档案，是当前最大的吞吐瓶颈
+6. `chapter_memory` 并发只省模型等待时间，SQLite 写入仍串行，且网关账号池只允许 2 路并发
+7. `archive_update` 仍按章串行且每章重写整本档案，占十章总耗时的 77%，是当前最大的吞吐瓶颈
+8. `archive` markdown 允许缺失（沿用上一版），它在读取路径上已经不是主数据
 
 ---
 

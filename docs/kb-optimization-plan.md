@@ -1219,3 +1219,79 @@ kb_document.usage_json        每章 token 用量 + 秒数，get_document 返回
 50 章推算（none + 并发 4）：约 16–20 分钟；仍待整轮实测
 整本档案 markdown 仍每章重写，是下一刀（Phase C/D）
 ```
+
+---
+
+## 23. 十章实测：并发的上限与真正的瓶颈（2026-11-17）
+
+样本：十日终焉 ch1–10（每章 2.2–2.5k 字），`reasoning_effort=none`，本地临时库，三个实验臂。
+
+### 23.1 串行基线（arm A）
+
+```text
+chapter_memory   99.1s 墙钟（调用合计 93.7s，单章中位 9.6s，17,762 tok）
+archive_update  328.8s 墙钟（调用合计 327.3s，单章中位 30.1s，77,465 tok）
+合计            427.9s
+质量            canonical 72 条、changes 79 条、reconcile 10/10 = 100%、重复组 0
+```
+
+**archive_update 占七成七。** 并发只能压缩剩下的 23%。
+
+### 23.2 网关的并发上限是 2
+
+```text
+并发 1：1/1 成功
+并发 2：2/2 成功
+并发 3：2/3 成功，第 3 个 503
+并发 4：2/4 成功，另 2 个 503
+```
+
+503 响应体：
+
+```json
+{"error": {"code": "no_healthy_account",
+           "gateway_hint": "no healthy account available in pool"}}
+```
+
+这是网关账号池只有 2 个健康账号，不是本地瓶颈。**所以 `FXI_KB_MEMORY_CONCURRENCY` 默认值从 4 改成 2**，往上调只会换来一半 503。
+
+### 23.3 并发 2 的真实收益
+
+```text
+chapter_memory   99.1s -> 66.4s  （-33%）
+单章调用中位      9.6s -> 11.0s  （并发争用，单章略慢）
+```
+
+假设 10 章全串行也才 428s，并发只省 33 秒——因为大头在 archive_update。
+
+### 23.4 50 章推算
+
+```text
+chapter_memory  50 × 9.6s / 2  ≈ 4 分钟
+archive_update  50 × 30–50s    ≈ 25–42 分钟（档案越长越慢）
+合计                            ≈ 30–46 分钟
+```
+
+不改造 archive_update，并发做得再好也就这个量级。
+
+### 23.5 附带发现：`reasoning_effort=none` 下会偶发空档案
+
+10 章里有 1 章模型只回了 `changes`，`archive` 为空 → 校验 hard 失败 → 链条中断，整章丢失。
+
+已修：
+
+```text
+archive 为空但 changes 非空 -> 视为可用，记 warning，沿用上一版档案 markdown
+draft 为空但 changes 非空   -> 同样放行
+两者都空                   -> 仍然 hard 失败
+```
+
+这也顺带把"档案是派生数据"的假设落到了代码里，是 Phase C/D 的前置。
+
+### 23.6 结论
+
+```text
+并发：能做，但网关只给 2 路，收益 ~33 秒/10 章
+真正瓶颈：每章重写整本九模块档案（占 77% 时间、77k/10 章的完成 token）
+下一刀必须是 archive_update 的形态改造，不是并发
+```

@@ -264,9 +264,11 @@ class KnowledgeServer:
             1, min(4, int(os.environ.get("FXI_KB_PARSE_CONCURRENCY", "1")))
         )
         # Chapter memory is one independent model call per chapter, so it can
-        # run concurrently while the SQLite writes stay sequential.
+        # run concurrently while the SQLite writes stay sequential. The
+        # default is 2 because the gateway pool serves two concurrent accounts
+        # and answers 503 no_healthy_account from the third request on.
         self.memory_concurrency = max(
-            1, min(8, int(os.environ.get("FXI_KB_MEMORY_CONCURRENCY", "4")))
+            1, min(8, int(os.environ.get("FXI_KB_MEMORY_CONCURRENCY", "2")))
         )
         self.memory_retries = max(
             0, min(5, int(os.environ.get("FXI_KB_MEMORY_RETRIES", "2")))
@@ -1682,17 +1684,32 @@ class KnowledgeServer:
             for chapter in chapters:
                 usage: dict = {}
                 started = time.perf_counter()
-                output = await archive_extraction.extract_archive_update_with_openai(
-                    previous_archive, [chapter],
-                    work_title=row["title"],
-                    base_url=self.llm_base_url,
-                    api_key=self.llm_api_key,
-                    model=self.llm_model,
-                    reasoning_effort=self.llm_reasoning_effort,
-                    max_tokens=self.llm_max_tokens,
-                    usage=usage,
-                )
+
+                async def extract(chapter: dict = chapter, usage: dict = usage) -> dict:
+                    return await archive_extraction.extract_archive_update_with_openai(
+                        previous_archive, [chapter],
+                        work_title=row["title"],
+                        base_url=self.llm_base_url,
+                        api_key=self.llm_api_key,
+                        model=self.llm_model,
+                        reasoning_effort=self.llm_reasoning_effort,
+                        max_tokens=self.llm_max_tokens,
+                        usage=usage,
+                    )
+
+                extraction = (await archive_extraction.run_with_concurrency(
+                    [chapter], extract, concurrency=1,
+                    retries=self.memory_retries,
+                ))[0]
                 usage["seconds"] = round(time.perf_counter() - started, 2)
+                if extraction["error"]:
+                    results.append({
+                        "chapter_index": chapter["chapter_index"],
+                        "valid": False, "issues": [extraction["error"]],
+                        "usage": usage,
+                    })
+                    break
+                output = extraction["output"]
                 result = archive_extraction.apply_archive_update(
                     self.db, row["id"], output,
                     source_chapters=[chapter["chapter_index"]],
@@ -1706,8 +1723,9 @@ class KnowledgeServer:
                 })
                 if not result.get("valid"):
                     break
-                previous_archive = str(
-                    (output.get("archive") if isinstance(output, dict) else "") or ""
+                previous_archive = (
+                    str((output.get("archive") if isinstance(output, dict) else "") or "")
+                    or previous_archive
                 )
             status = (
                 "completed"

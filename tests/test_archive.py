@@ -1814,3 +1814,31 @@ def test_documents_persist_usage(tmp_path) -> None:
     )
     assert fetched["usage"] == usage
     db.close()
+
+
+def test_archive_update_accepts_changes_without_archive_markdown(tmp_path) -> None:
+    db = _db(tmp_path)
+    output = {
+        "draft": "【更新判定草稿】第一阶段……第二阶段……第三阶段……",
+        "changes": [{
+            "entry_key": "唐三:境界", "module": "五", "info_type": "dynamic",
+            "op": "upsert", "subject": "唐三", "predicate": "境界",
+            "value": "第一重", "evidence": "突破第一重",
+        }],
+    }
+    result = archive_extraction.apply_archive_update(
+        db, "w1", output, source_chapters=[1],
+        previous_archive="（无原档案）",
+    )
+    assert result["valid"] is True
+    assert result["changes_applied"]["applied"] == 1
+    assert any("archive 为空" in warning for warning in result["warnings"])
+    assert result["document"]["content_markdown"] == "（无原档案）"
+    db.close()
+
+
+def test_archive_update_rejects_output_without_draft_and_changes() -> None:
+    with pytest.raises(ValueError):
+        archive_extraction.parse_archive_update_output(
+            '{"draft": "", "archive": "", "changes": []}'
+        )
