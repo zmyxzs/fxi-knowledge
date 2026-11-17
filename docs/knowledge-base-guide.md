@@ -389,6 +389,7 @@ GET /api/relations?work=&between=唐昊,唐三
 
 `/api/story` 是统一读取入口：只支持 `work/subject/module/page_size/offset`，读取层由作品画像 `read_layer` 决定。  
 `/api/canonical` 是内部/高级接口，支持 `subject/module/info_type/entry_key` 过滤；`/api/canonical/apply` 应用结构化 changes。  
+canonical 的 `entry_key` 恒为 `主体:字段`，不带模块号前缀；模块写在 `module` 列。`七:唐三:境界`、`模块五、唐三:境界` 这类写法在写入时会被归一化为 `唐三:境界`，不可解析为 `主体:字段` 的 change 会被跳过并记 warning，不会中断整章。  
 `/api/entity` 会同时返回实体的 `canonical` 条目，便于从人物直接关联当前状态。  
 `/api/story_record` 是档案原始记录与调试入口，支持 `limit/offset`。  
 `/api/canonical`、`/api/reconcile`、`/api/archive_changes`、`/api/story_record` 是管理/调试接口，读取也需要 `X-API-Key`。  
@@ -500,6 +501,8 @@ GET /api/relations?work=&between=唐昊,唐三
 
 终态：`completed` / `partial` / `failed` / `interrupted`。
 
+`mode=chapter_memory` 的章节并发见 `FXI_KB_MEMORY_CONCURRENCY`。单章失败（模型返回非法 JSON、重试后仍失败、投影失败）不会中断整批：该章记为 `status=failed` 并留在 `summary`，其余章节继续，任务终态为 `partial`。
+
 ### 4.10 文档端点
 
 | 路径 | 内容 |
@@ -575,7 +578,11 @@ FXI_KB_LLM_BASE_URL=https://wd.zmteams.site/v1
 FXI_KB_LLM_API_KEY=sk-...
 FXI_KB_LLM_MODEL=global:deepseek-v4.1-flash
 FXI_KB_PARSE_CONCURRENCY=1
+FXI_KB_MEMORY_CONCURRENCY=4
+FXI_KB_MEMORY_RETRIES=2
 ```
+
+`FXI_KB_MEMORY_CONCURRENCY` 只影响 `chapter_memory` 的模型调用并发（1–8，默认 4），数据库写入仍按章节顺序串行；`FXI_KB_MEMORY_RETRIES` 是单章传输层失败（429/5xx/超时）的重试次数（0–5，默认 2），退避 1s、2s。
 
 ### 6.3 常用命令
 
@@ -641,6 +648,8 @@ sqlite3 ~/fxi-bench/data/bench-db.sqlite3 ".backup /tmp/kg-$(date +%F).sqlite3"
 3. 拆书检索是字面匹配，不是向量语义检索
 4. 解析任务状态存 `parse_jobs.json`，仅保留最近 100 条
 5. 默认解析并发 1，2C/2G 机器不建议调高
+6. `chapter_memory` 并发只省模型等待时间，SQLite 写入仍串行，吞吐上限受单章最长调用限制
+7. `archive_update` 仍按章串行且每章重写整本档案，是当前最大的吞吐瓶颈
 
 ---
 

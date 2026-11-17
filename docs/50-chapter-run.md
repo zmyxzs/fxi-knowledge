@@ -288,7 +288,9 @@ archive/delete change 也参与精确 key 匹配
 
 ```text
 1. 批量 archive_update
-2. 并发 chapter_memory
-3. 非状态 key 统一
+2. 并发 chapter_memory       已实施（2026-11-17），待实测
+3. 非状态 key 统一           已实施（2026-11-17）：写入归一化 主体:字段
 4. 50 章 A/B 对照
 ```
+
+2026-11-17 补充：第 2、3 项已落地，见 `docs/kb-optimization-plan.md` §21。第 1 项（批量 archive_update）前置条件是 state_deltas 由代码直接写 canonical，否则批量只输出非状态会丢状态。第 4 项仍未做，所以并发收益目前没有实测数字。

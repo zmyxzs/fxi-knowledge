@@ -85,6 +85,8 @@ draft 必须包含：
 ## 五、changes 纪律
 1. 只写本章明确改变的状态；未变化条目不写。
 2. 状态变化必须用 `source_delta` 指向 `chapter_memory.state_deltas` 的下标，不要再写 entry_key；非状态变化（规则/历史/世界）才用 `entry_key: 主体:字段`，并且必须同时写 `subject` 和 `predicate`。每个 change 至少要满足其中一种，否则不要输出。
+   - `entry_key` 只能是 `主体:字段`，不带模块号前缀（不要写 `七:`、`模块五:`）。模块只写在 `module` 字段。
+   - 同一条目在不同章节必须复用同一个 `主体:字段`，不要换写法，否则会产生重复条目。
 3. `info_type`：
    - `rule`：机制规则
    - `dynamic`：位置、伤势、境界、资产、态度等可覆盖状态

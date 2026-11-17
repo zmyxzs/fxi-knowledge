@@ -140,7 +140,7 @@ def test_entity_returns_canonical_entries(tmp_path) -> None:
     result = server.entity("唐三", "作品")
     assert result["archive"] is False
     assert result["total"] == 1
-    assert result["canonical"][0]["entry_key"] == "五:唐三:境界"
+    assert result["canonical"][0]["entry_key"] == "唐三:境界"
 
 
 def test_story_filters_by_subject_and_module(tmp_path) -> None:
@@ -566,3 +566,56 @@ def test_audit_runs_semantic_hard_rule_check(tmp_path, monkeypatch) -> None:
         item["type"] == "HARD_RULE_CONFLICT" for item in report["violations"]
     )
     assert report["passed"] is False
+
+
+def test_chapter_memory_keeps_batch_when_one_chapter_fails(tmp_path, monkeypatch) -> None:
+    from fxi_novel.knowledge import archive_extraction
+
+    server = _server(tmp_path)
+    server.llm_base_url = "http://llm.invalid"
+    server.llm_api_key = "key"
+    server.llm_model = "model"
+    server.memory_concurrency = 3
+    server.memory_retries = 0
+    server.create_work("作品")
+    text = "杨凌走进山门。赵洵收他为徒，赐下一柄灵剑。"
+    ids = [
+        server.add_source("作品", "第1章", text, chapter_index=1)["id"],
+        server.add_source("作品", "第2章", text, chapter_index=2)["id"],
+    ]
+
+    async def fake_extract(chapter_text, chapter_index, **kwargs):
+        if chapter_index == 2:
+            raise ValueError("模型返回非法 JSON")
+        return {
+            "chapter_index": chapter_index,
+            "scenes": [{
+                "name": "入山",
+                "causal_paragraph": "杨凌走进山门，被守门弟子拦下，出示信物后进入外门。",
+                "participants": ["杨凌"],
+                "evidence": "杨凌走进山门",
+            }],
+            "cognition": [],
+            "state_deltas": [],
+            "unresolved": [],
+            "snapshot": {},
+        }
+
+    monkeypatch.setattr(
+        archive_extraction, "extract_chapter_memory_with_openai", fake_extract,
+    )
+    row = server.resolve_work("作品")
+    result = asyncio.run(server._run_chapter_memory(server.knowledge, row, ids))
+    assert result["status"] == "partial"
+    assert result["failed"] == 1
+    assert result["concurrency"] == 3
+    assert [item["chapter_index"] for item in result["chapters"]] == [1, 2]
+    assert result["chapters"][1]["status"] == "failed"
+    assert "ValueError" in result["chapters"][1]["error"]
+    document = server.documents(
+        "作品", "chapter_memory", "chapter:1", None,
+    )["document"]
+    assert document["status"] == "active"
+    assert server.documents(
+        "作品", "chapter_memory", "chapter:2", None,
+    )["document"] is None

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import uuid
 
+import httpx
 import pytest
 
 from fxi_novel.knowledge import archive, archive_extraction
@@ -984,15 +987,28 @@ def test_apply_archive_changes_uses_key_without_module(tmp_path) -> None:
 
 def test_dedupe_canonical_prefers_higher_priority_module(tmp_path) -> None:
     db = _db(tmp_path)
-    for module in ("四", "五"):
-        archive.apply_archive_changes(db, "w1", 1, [{
-            "entry_key": f"{module}:唐三:位置",
-            "module": module,
-            "info_type": "dynamic",
-            "subject": "唐三",
-            "predicate": "位置",
-            "value": "圣魂村",
-        }])
+    # Legacy rows written before keys were normalized still carry the module
+    # prefix, so the duplicate cleanup has to keep working on them.
+    with db.transaction() as connection:
+        for module in ("四", "五"):
+            connection.execute(
+                """
+                INSERT INTO kb_story_record(
+                    id, work_id, chapter_index, category, payload_json,
+                    entry_key, layer, module, info_type, origin,
+                    revision, status, created_at
+                ) VALUES (?, 'w1', 1, 'fact', ?, ?, 'canonical', ?, 'dynamic',
+                          'archive_update', 1, 'active', ?)
+                """,
+                (
+                    uuid.uuid4().hex,
+                    json.dumps(
+                        {"subject": "唐三", "predicate": "位置", "value": "圣魂村"},
+                        ensure_ascii=False,
+                    ),
+                    f"{module}:唐三:位置", module, archive._now(),
+                ),
+            )
     duplicates = archive.find_canonical_duplicates(db, "w1")
     assert len(duplicates) == 1
     result = archive.dedupe_canonical(db, "w1")
@@ -1138,7 +1154,7 @@ def test_archive_update_applies_canonical_changes(tmp_path) -> None:
     assert result["changes_applied"]["applied"] == 1
     records = archive.list_story_records(db, "w1", layer="canonical")
     assert len(records) == 1
-    assert records[0]["entry_key"] == "五:唐三:境界"
+    assert records[0]["entry_key"] == "唐三:境界"
     assert records[0]["payload"]["value"] == "第一重"
     db.close()
 
@@ -1588,3 +1604,115 @@ def test_work_type_registry_and_custom_profile(tmp_path) -> None:
     with pytest.raises(ValueError):
         archive.set_work_profile(db, "w2", work_type="unknown")
     db.close()
+
+
+def test_normalize_entry_key_strips_module_prefix() -> None:
+    assert archive.normalize_entry_key("七:唐三:境界") == "唐三:境界"
+    assert archive.normalize_entry_key("模块五、唐三：境界", "五") == "唐三:境界"
+    assert archive.normalize_entry_key("唐三：境界") == "唐三:境界"
+    assert archive.normalize_entry_key("唐三:修炼:当前节点") == "唐三:修炼:当前节点"
+    assert archive.normalize_entry_key("唐三:境界", "五") == "唐三:境界"
+    assert archive.split_entry_key("六:势力:武魂殿") == ("势力", "武魂殿")
+    assert archive.split_entry_key("唐三修炼线") == ("唐三修炼线", "")
+
+
+def test_apply_archive_changes_merges_module_prefixed_key(tmp_path) -> None:
+    db = _db(tmp_path)
+    archive.apply_archive_changes(db, "w1", 1, [
+        {"module": "七", "entry_key": "唐三:修炼线", "value": "第一重"},
+    ])
+    archive.apply_archive_changes(db, "w1", 2, [
+        {"module": "七", "entry_key": "七:唐三:修炼线", "value": "第二重"},
+    ])
+    records = archive.list_story_records(db, "w1", layer="canonical")
+    assert len(records) == 1
+    assert records[0]["entry_key"] == "唐三:修炼线"
+    assert records[0]["payload"]["value"] == "第二重"
+    assert archive.find_canonical_duplicates(db, "w1") == []
+    db.close()
+
+
+def test_apply_archive_changes_rejects_key_without_predicate(tmp_path) -> None:
+    db = _db(tmp_path)
+    with pytest.raises(ValueError):
+        archive.apply_archive_changes(db, "w1", 1, [
+            {"module": "七", "entry_key": "唐三修炼线", "value": "第一重"},
+        ])
+    db.close()
+
+
+def test_filter_archive_update_changes_normalizes_entry_key() -> None:
+    valid, warnings = archive_extraction.filter_archive_update_changes([
+        {"module": "七", "entry_key": "七:故事线:主线", "value": "推进"},
+        {"module": "七", "entry_key": "无字段条目", "value": "丢弃"},
+        {"module": "五", "subject": "唐三", "predicate": "境界", "value": "一环"},
+    ])
+    assert [item["entry_key"] for item in valid] == ["故事线:主线", "唐三:境界"]
+    assert any("模块前缀" in warning for warning in warnings)
+    assert any("主体:字段" in warning for warning in warnings)
+
+
+def test_run_with_concurrency_keeps_input_order() -> None:
+    async def worker(item: int) -> int:
+        await asyncio.sleep(0.01 * (3 - item))
+        return item * 10
+
+    results = asyncio.run(archive_extraction.run_with_concurrency(
+        [1, 2, 3], worker, concurrency=3,
+    ))
+    assert [item["output"] for item in results] == [10, 20, 30]
+    assert all(item["error"] is None for item in results)
+
+
+def test_run_with_concurrency_caps_in_flight_work() -> None:
+    state = {"active": 0, "peak": 0}
+
+    async def worker(item: int) -> int:
+        state["active"] += 1
+        state["peak"] = max(state["peak"], state["active"])
+        await asyncio.sleep(0.01)
+        state["active"] -= 1
+        return item
+
+    results = asyncio.run(archive_extraction.run_with_concurrency(
+        list(range(6)), worker, concurrency=2,
+    ))
+    assert len(results) == 6
+    assert state["peak"] <= 2
+
+
+def test_run_with_concurrency_retries_transient_failures() -> None:
+    calls = {"count": 0}
+    slept: list[float] = []
+
+    async def worker(item: str) -> str:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise httpx.ConnectError("connection reset")
+        return "ok"
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    results = asyncio.run(archive_extraction.run_with_concurrency(
+        ["chapter"], worker, concurrency=1, retries=2,
+        retry_backoff=0.5, sleep=fake_sleep,
+    ))
+    assert results[0]["error"] is None
+    assert results[0]["output"] == "ok"
+    assert results[0]["attempts"] == 2
+    assert slept == [0.5]
+
+
+def test_run_with_concurrency_isolates_failures() -> None:
+    async def worker(item: str) -> str:
+        if item == "bad":
+            raise ValueError("模型返回非法 JSON")
+        return item
+
+    results = asyncio.run(archive_extraction.run_with_concurrency(
+        ["ok1", "bad", "ok2"], worker, concurrency=2, retries=2,
+    ))
+    assert [item["output"] for item in results] == ["ok1", None, "ok2"]
+    assert "ValueError" in results[1]["error"]
+    assert results[1]["attempts"] == 1

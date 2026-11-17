@@ -915,6 +915,62 @@ def canonical_entry_key(subject: str, predicate: str) -> str:
     return f"{str(subject).strip()}:{str(predicate).strip()}"
 
 
+MODULE_NUMBER_TOKENS = frozenset(
+    {
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+        "一", "二", "三", "四", "五", "六", "七", "八", "九", "十",
+    }
+)
+
+
+MODULE_PREFIX_PATTERN = re.compile(
+    r"^(?:模[块组]\s*)?(?:[0-9]+|[一二三四五六七八九十]+)\s*[、,，.。:：]\s*"
+)
+
+
+def module_token(module: str) -> str:
+    """Return the bare module marker, e.g. "模块五" or "五、" -> "五"."""
+    text = str(module or "").strip()
+    for prefix in ("模块", "module", "Module", "MODULE"):
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+    return text.strip("、.。:： ")
+
+
+def normalize_entry_key(entry_key: str, module: str = "") -> str:
+    """Force ``主体:字段`` and drop module prefixes models like to add.
+
+    Canonical keys are the join of subject and predicate only; the module is
+    stored in its own column. Models still emit keys such as ``七:故事线`` or
+    ``模块五、唐三:境界``, which used to create a second row for an item that
+    already existed. The module marker is recognized from the change's own
+    ``module`` field or from a leading module number.
+    """
+    text = str(entry_key or "").strip().replace("：", ":")
+    text = MODULE_PREFIX_PATTERN.sub("", text)
+    parts = [part.strip() for part in text.split(":")]
+    parts = [part for part in parts if part]
+    if not parts:
+        return ""
+    tokens = set(MODULE_NUMBER_TOKENS)
+    token = module_token(module)
+    if token:
+        tokens.add(token)
+    while len(parts) >= 2 and parts[0] in tokens:
+        parts.pop(0)
+    if len(parts) > 2:
+        parts = [parts[0], ":".join(parts[1:])]
+    return ":".join(parts)
+
+
+def split_entry_key(entry_key: str, module: str = "") -> tuple[str, str]:
+    key = normalize_entry_key(entry_key, module)
+    if ":" not in key:
+        return key, ""
+    subject, predicate = key.split(":", 1)
+    return subject, predicate
+
+
 def apply_archive_changes(
     db: Any, work_id: str, chapter_index: int, changes: list[dict],
     *, origin: str = "archive_update",
@@ -952,8 +1008,11 @@ def apply_archive_changes(
                 if not (module and subject and predicate):
                     raise ValueError("entry_key or module/subject/predicate is required")
                 entry_key = canonical_entry_key(subject, predicate)
+            entry_key = normalize_entry_key(entry_key, module)
             if not subject and not predicate and ":" in entry_key:
                 subject, predicate = entry_key.split(":", 1)
+            if not predicate:
+                raise ValueError(f"entry_key must be 主体:字段, got {entry_key!r}")
             op = str(change.get("op") or "upsert")
             if op not in {"upsert", "archive", "delete"}:
                 raise ValueError(f"unsupported op: {op}")
@@ -1235,17 +1294,39 @@ def dedupe_canonical(db: Any, work_id: str) -> dict:
                 int(winner.get("chapter_index") or 0),
                 int(record.get("chapter_index") or 0),
             )
-            result = apply_archive_changes(
-                db, work_id, chapter, [{
-                    "entry_key": record["entry_key"],
-                    "module": record.get("module"),
-                    "info_type": record.get("info_type"),
-                    "op": "archive",
-                    "subject": record["payload"].get("subject"),
-                    "predicate": record["payload"].get("predicate"),
-                }],
-            )
-            archived += result["archived"]
+            # Archive the row that was actually matched, not a key lookup:
+            # legacy rows still carry the module prefix in their entry_key.
+            archived_payload = {**record["payload"], "status": "archived"}
+            with db.transaction() as connection:
+                connection.execute(
+                    """
+                    UPDATE kb_story_record
+                    SET payload_json=?, chapter_index=?, revision=revision+1,
+                        status='archived'
+                    WHERE id=?
+                    """,
+                    (
+                        json.dumps(archived_payload, ensure_ascii=False),
+                        chapter, record["id"],
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO kb_archive_change(
+                        id, work_id, chapter_index, entry_key, op, module,
+                        info_type, before_json, after_json, evidence, created_at
+                    ) VALUES (?, ?, ?, ?, 'archive', ?, ?, ?, ?, '', ?)
+                    """,
+                    (
+                        uuid.uuid4().hex, work_id, chapter,
+                        str(record.get("entry_key") or ""),
+                        record.get("module"), record.get("info_type"),
+                        json.dumps(record["payload"], ensure_ascii=False),
+                        json.dumps(archived_payload, ensure_ascii=False),
+                        _now(),
+                    ),
+                )
+            archived += 1
     return {"archived": archived}
 
 

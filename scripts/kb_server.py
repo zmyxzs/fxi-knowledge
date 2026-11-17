@@ -262,6 +262,14 @@ class KnowledgeServer:
         self.parse_concurrency = max(
             1, min(4, int(os.environ.get("FXI_KB_PARSE_CONCURRENCY", "1")))
         )
+        # Chapter memory is one independent model call per chapter, so it can
+        # run concurrently while the SQLite writes stay sequential.
+        self.memory_concurrency = max(
+            1, min(8, int(os.environ.get("FXI_KB_MEMORY_CONCURRENCY", "4")))
+        )
+        self.memory_retries = max(
+            0, min(5, int(os.environ.get("FXI_KB_MEMORY_RETRIES", "2")))
+        )
         self.jobs: dict[str, dict] = self._load_jobs()
         self.db = Database(database)
         self.db.initialize()
@@ -1635,33 +1643,8 @@ class KnowledgeServer:
                 "status": "skipped", "mode": "archive_update",
                 "reason": "LLM is not configured",
             }
-        chapters = []
         try:
-            for source_id in ids:
-                meta = archive.get_source_meta(self.db, source_id)
-                text = str(meta.get("content_raw") or "")
-                if not text:
-                    current = knowledge.repository.get_source(
-                        source_id, content_offset=0, content_limit=50_000,
-                        include_evidence=False,
-                    )
-                    text = str((current or {}).get("content") or "")
-                if not text:
-                    continue
-                chapter_index = (
-                    int(meta["chapter_index"])
-                    if meta.get("chapter_index") is not None
-                    else archive.next_chapter_index(self.db, row["id"])
-                )
-                memory = archive.get_document(
-                    self.db, row["id"], "chapter_memory",
-                    f"chapter:{chapter_index}", status="active",
-                )
-                chapters.append({
-                    "chapter_index": chapter_index,
-                    "text": text,
-                    "chapter_memory": memory.get("content") if memory else None,
-                })
+            chapters = self._chapter_inputs(knowledge, row, ids, with_memory=True)
             if not chapters:
                 return {
                     "status": "failed", "mode": "archive_update",
@@ -1724,6 +1707,38 @@ class KnowledgeServer:
                 "error": f"{type(exc).__name__}: {exc}",
             }
 
+    def _chapter_inputs(
+        self, knowledge: Any, row: dict, ids: list[str], *,
+        with_memory: bool = False,
+    ) -> list[dict]:
+        """Load chapter text (and optionally chapter memory) in source order."""
+        chapters: list[dict] = []
+        for source_id in ids:
+            meta = archive.get_source_meta(self.db, source_id)
+            text = str(meta.get("content_raw") or "")
+            if not text:
+                current = knowledge.repository.get_source(
+                    source_id, content_offset=0, content_limit=50_000,
+                    include_evidence=False,
+                )
+                text = str((current or {}).get("content") or "")
+            if not text:
+                continue
+            chapter_index = (
+                int(meta["chapter_index"])
+                if meta.get("chapter_index") is not None
+                else archive.next_chapter_index(self.db, row["id"])
+            )
+            chapter = {"chapter_index": chapter_index, "text": text}
+            if with_memory:
+                memory = archive.get_document(
+                    self.db, row["id"], "chapter_memory",
+                    f"chapter:{chapter_index}", status="active",
+                )
+                chapter["chapter_memory"] = memory.get("content") if memory else None
+            chapters.append(chapter)
+        return chapters
+
     async def _run_chapter_memory(
         self, knowledge: Any, row: dict, ids: list[str],
     ) -> dict:
@@ -1732,40 +1747,68 @@ class KnowledgeServer:
                 "status": "skipped", "mode": "chapter_memory",
                 "reason": "LLM is not configured",
             }
-        chapters = []
         try:
-            for source_id in ids:
-                meta = archive.get_source_meta(self.db, source_id)
-                text = str(meta.get("content_raw") or "")
-                if not text:
-                    current = knowledge.repository.get_source(
-                        source_id, content_offset=0, content_limit=50_000,
-                        include_evidence=False,
-                    )
-                    text = str((current or {}).get("content") or "")
-                if not text:
-                    continue
-                chapter_index = (
-                    int(meta["chapter_index"])
-                    if meta.get("chapter_index") is not None
-                    else archive.next_chapter_index(self.db, row["id"])
-                )
-                output = await archive_extraction.extract_chapter_memory_with_openai(
-                    text, chapter_index,
+            chapters = self._chapter_inputs(knowledge, row, ids)
+            if not chapters:
+                return {
+                    "status": "failed", "mode": "chapter_memory",
+                    "error": "no chapter text",
+                }
+
+            async def extract(chapter: dict) -> dict:
+                return await archive_extraction.extract_chapter_memory_with_openai(
+                    chapter["text"], chapter["chapter_index"],
                     base_url=self.llm_base_url,
                     api_key=self.llm_api_key,
                     model=self.llm_model,
                 )
-                chapters.append(archive_extraction.apply_chapter_memory_output(
-                    self.db, row["id"], chapter_index, output,
-                    text=text,
-                    prompt_name="chapter-memory",
-                    prompt_version="4",
-                    model=self.llm_model,
-                ))
+
+            extractions = await archive_extraction.run_with_concurrency(
+                chapters, extract,
+                concurrency=self.memory_concurrency,
+                retries=self.memory_retries,
+            )
+            results: list[dict] = []
+            for extraction in extractions:
+                chapter = extraction["item"]
+                chapter_index = chapter["chapter_index"]
+                if extraction["error"]:
+                    results.append({
+                        "chapter_index": chapter_index, "valid": False,
+                        "status": "failed", "error": extraction["error"],
+                    })
+                    continue
+                try:
+                    applied = archive_extraction.apply_chapter_memory_output(
+                        self.db, row["id"], chapter_index, extraction["output"],
+                        text=chapter["text"],
+                        prompt_name="chapter-memory",
+                        prompt_version="4",
+                        model=self.llm_model,
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep the batch alive
+                    results.append({
+                        "chapter_index": chapter_index, "valid": False,
+                        "status": "failed",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+                    continue
+                results.append({
+                    **applied,
+                    "status": "completed" if applied.get("valid") else "invalid",
+                    "attempts": extraction["attempts"],
+                })
+            failed = [item for item in results if item["status"] == "failed"]
+            if failed and len(failed) == len(results):
+                status = "failed"
+            elif failed:
+                status = "partial"
+            else:
+                status = "completed"
             return {
-                "status": "completed", "mode": "chapter_memory",
-                "chapters": chapters,
+                "status": status, "mode": "chapter_memory",
+                "chapters": results, "failed": len(failed),
+                "concurrency": self.memory_concurrency,
             }
         except Exception as exc:  # noqa: BLE001 - surface on the job
             return {

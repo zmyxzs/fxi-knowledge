@@ -299,6 +299,68 @@ def _merge_system(messages: list[dict[str, str]]) -> list[dict[str, str]]:
     ]
 
 
+def _is_retryable(exc: BaseException) -> bool:
+    """Only transport-level failures are worth another identical request."""
+    if isinstance(exc, (httpx.TimeoutException, httpx.TransportError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code
+        return status == 429 or status >= 500
+    return False
+
+
+async def run_with_concurrency(
+    items: list[Any],
+    worker: Any,
+    *,
+    concurrency: int = 1,
+    retries: int = 0,
+    retry_backoff: float = 1.0,
+    sleep: Any = None,
+) -> list[dict]:
+    """Run ``worker(item)`` over ``items`` with bounded concurrency.
+
+    Results keep input order, so callers can apply them to the database in
+    chapter order even though the model calls finish out of order. A failing
+    item is retried only for transient transport errors, then recorded as a
+    failure instead of aborting the whole batch.
+    """
+    import asyncio
+
+    sleeper = sleep or asyncio.sleep
+    limit = max(1, int(concurrency))
+    attempts = max(0, int(retries))
+    semaphore = asyncio.Semaphore(limit)
+
+    async def one(item: Any) -> dict:
+        last_error: BaseException | None = None
+        for attempt in range(attempts + 1):
+            try:
+                async with semaphore:
+                    return {
+                        "item": item,
+                        "output": await worker(item),
+                        "error": None,
+                        "attempts": attempt + 1,
+                    }
+            except Exception as exc:  # noqa: BLE001 - recorded per item
+                last_error = exc
+                if attempt >= attempts or not _is_retryable(exc):
+                    break
+                await sleeper(retry_backoff * (2 ** attempt))
+        assert last_error is not None
+        return {
+            "item": item,
+            "output": None,
+            "error": f"{type(last_error).__name__}: {last_error}",
+            "attempts": attempt + 1,
+        }
+
+    if not items:
+        return []
+    return list(await asyncio.gather(*(one(item) for item in items)))
+
+
 def _merge_ledger(previous: dict, delta: dict) -> dict:
     ledger = json.loads(json.dumps(previous or {}))
     currency = ledger.setdefault("currency", {})
@@ -1262,6 +1324,8 @@ def archive_update_warnings(
 def filter_archive_update_changes(
     changes: list[dict], state_delta_count: int | None = None,
 ) -> tuple[list[dict], list[str]]:
+    from . import archive
+
     valid: list[dict] = []
     warnings: list[str] = []
     for index, change in enumerate(changes):
@@ -1287,12 +1351,27 @@ def filter_archive_update_changes(
         module = str(change.get("module") or "").strip()
         subject = str(change.get("subject") or "").strip()
         predicate = str(change.get("predicate") or "").strip()
-        if entry_key or (module and subject and predicate):
+        if subject and predicate:
+            change = {**change, "entry_key": f"{subject}:{predicate}"}
             valid.append(change)
-        else:
+            continue
+        if not entry_key:
             warnings.append(
                 f"changes[{index}] 缺少 source_delta/entry_key/subject，已跳过"
             )
+            continue
+        normalized = archive.normalize_entry_key(entry_key, module)
+        if ":" not in normalized:
+            warnings.append(
+                f"changes[{index}] entry_key 不是 主体:字段（{entry_key}），已跳过"
+            )
+            continue
+        if normalized != entry_key:
+            warnings.append(
+                f"changes[{index}] entry_key 去掉模块前缀：{entry_key} -> {normalized}"
+            )
+            change = {**change, "entry_key": normalized}
+        valid.append(change)
     return valid, warnings
 
 
